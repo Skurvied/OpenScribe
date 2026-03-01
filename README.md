@@ -10,7 +10,7 @@ Open-source AI medical scribe for recording encounters and generating structured
   <a href="https://github.com/sammargolis/OpenScribe/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License">
   </a>
-  <a href="https://discord.gg/DbgafEME">
+  <a href="https://discord.gg/BcNNspcNE8">
     <img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
   </a>
   <a href="https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28">
@@ -32,8 +32,7 @@ OpenScribe is a free MIT license open source AI Medical Scribe that helps clinic
 - [Contributing](./CONTRIBUTING.md)
 
 
-This software is currently in early development (v0.x) and is NOT suitable for clinical practice yet. It is intended for evaluation, testing, and development purposes only. 
-- HIPAA Compliant version is currently in the works.  Join the Discord for more information when the version is launched.
+The current project is not yet HIPAA compliant; however, we recently signed up with Delve and will be HIPAA compliant in the next few weeks.
 
 ## Demo
 
@@ -88,7 +87,41 @@ pnpm dev:local    # One command: Whisper local server + web app
 Optional desktop app path:
 
 ```bash
-pnpm dev:desktop
+pnpm electron:dev
+```
+
+## Quick Start (Docker)
+
+SAM is the easiest way to run OpenScribe for new contributors: one command starts the web app and local Whisper transcription service.
+
+### 1. Create SAM env file
+
+```bash
+pnpm run setup
+```
+
+Edit `apps/web/.env.local` and set:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE
+```
+
+### 2. Start SAM
+
+```bash
+docker compose -f docker-compose.sam.yml up --build
+```
+
+### 3. Open the app
+
+```bash
+http://localhost:3001
+```
+
+### 4. Verify Whisper health (optional)
+
+```bash
+curl http://127.0.0.1:8002/health
 ```
 
 ---
@@ -102,13 +135,18 @@ OpenScribe supports three workflows. **Mixed web mode is the default path.**
 - Notes: larger model (default Claude in web path)
 - Start everything with one command: `pnpm dev:local`
 - Configure with `TRANSCRIPTION_PROVIDER=whisper_local` in `apps/web/.env.local`
-- Setup guide: `docs/WHISPER-LOCAL-SETUP.md`
+- [Setup guide](./docs/WHISPER-LOCAL-SETUP.md)
+
+**Language support**
+- Default model `tiny.en` as well as all `.en`-models transcribes English only
+- Multilingual transcription works for both local and API-based models
+- Multilingual transcription is supported by setting `WHISPER_LANGUAGE` (see `.env.local.example` for details) and (for local use) switching to a non-`.en` Whisper model (e.g. `tiny`, `base`, `small`)
 
 ### Local-only Desktop (optional)
 - Transcription: local Whisper backend in `local-only/openscribe-backend`
 - Notes: local Ollama models (`llama3.2:*`, `gemma3:4b`)
 - No cloud inference in this path
-- Setup guide: `/Users/sammargolis/OpenScribe/local-only/README.md`
+- [Setup guide](./local-only/README.md)
 
 ### Cloud/OpenAI + Claude (fallback)
 - Transcription: OpenAI Whisper API
@@ -200,22 +238,22 @@ See [architecture.md](./architecture.md) for complete details.
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────┐
-│              Processing Pipeline                         │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌─────┐  │
-│  │  Audio   │──►│Transcribe│──►│   LLM    │──►│Note │  │
-│  │  Ingest  │   │ (Whisper)│   │          │   │Core │  │
-│  └──────────┘   └──────────┘   └──────────┘   └─────┘  │
+│              Processing Pipeline                        │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌─────┐   │
+│  │  Audio   │──►│Transcribe│──►│   LLM    │──►│Note │   │
+│  │  Ingest  │   │ (Whisper)│   │          │   │Core │   │
+│  └──────────┘   └──────────┘   └──────────┘   └─────┘   │
 │       │                                           │     │
 │       └───────────────┐         ┌─────────────────┘     │
 └───────────────────────┼─────────┼───────────────────────┘
                         ▼         ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  Storage Layer                           │
+│                  Storage Layer                          │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │  Encrypted LocalStorage (AES-GCM)                │   │
 │  │  - Encounters (patient data, transcripts, notes) │   │
 │  │  - Metadata (timestamps, status)                 │   │
-│  │  - Audio (in-memory only, not persisted)        │   │
+│  │  - Audio (in-memory only, not persisted)         │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```

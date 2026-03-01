@@ -10,7 +10,7 @@ import {
   type PipelineError,
 } from "@pipeline-errors"
 import type { Encounter } from "@storage/types"
-import { useEncounters, EncounterList, IdleView, NewEncounterForm, RecordingView, ProcessingView, ErrorBoundary, PermissionsDialog, SettingsDialog, SettingsBar, useHttpsWarning } from "@ui"
+import { useEncounters, EncounterList, IdleView, NewEncounterForm, RecordingView, ProcessingView, ErrorBoundary, PermissionsDialog, SettingsDialog, SettingsBar, ModelIndicator, useHttpsWarning } from "@ui"
 import { NoteEditor } from "@note-rendering"
 import { useAudioRecorder, type RecordedSegment, warmupMicrophonePermission, warmupSystemAudioPermission } from "@audio"
 import { useSegmentUpload, type UploadError } from "@transcription";
@@ -1076,6 +1076,7 @@ function HomePageContent() {
             onDeleteEncounter={handleDeleteEncounter}
             disabled={view.type === "recording"}
           />
+          <ModelIndicator processingMode={processingMode} />
           <SettingsBar onOpenSettings={handleOpenSettings} />
         </div>
         <main className="flex flex-1 flex-col overflow-hidden bg-background">
