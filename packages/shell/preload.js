@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('desktop', {
         'check-for-updates',
         'check-announcements',
         'open-release-page',
+        'send-to-openclaw',
+        'openclaw-chat-turn',
       ]);
 
       if (!allowed.has(channel)) {
