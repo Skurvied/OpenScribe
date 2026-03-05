@@ -23,6 +23,11 @@ declare global {
     openScreenPermissionSettings?: () => Promise<boolean> | boolean
     getPrimaryScreenSource?: () => Promise<DesktopScreenSource | null>
     secureStorage?: SecureStorageAPI
+    openscribeBackend?: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      on: (channel: string, listener: (event: unknown, payload: unknown) => void) => void
+      removeAllListeners: (channel: string) => void
+    }
   }
 
   interface Window {

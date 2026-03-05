@@ -447,6 +447,16 @@ function HomePageContent() {
 
   const handleStreamError = useCallback((event: MessageEvent | Event) => {
     const readyState = eventSourceRef.current?.readyState
+    const hasFinalTranscript = Boolean(finalTranscriptRef.current?.trim())
+    const hasActiveSession = Boolean(sessionIdRef.current)
+
+    // EventSource commonly emits a terminal "error" event on normal close.
+    // Do not mark processing as failed if we already have final transcript or session is closed.
+    if (hasFinalTranscript || !hasActiveSession) {
+      debugWarn("Transcription stream closed", { readyState, hasFinalTranscript, hasActiveSession })
+      return
+    }
+
     debugError("Transcription stream error", { event, readyState, apiBaseUrl: apiBaseUrlRef.current })
     setTranscriptionStatus("failed")
     setProcessingMetrics((prev) => ({
