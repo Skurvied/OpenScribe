@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { X } from "lucide-react"
 import { Button } from "@ui/lib/ui/button"
 import { Label } from "@ui/lib/ui/label"
@@ -31,12 +31,21 @@ export function SettingsDialog({
   const [saveMessage, setSaveMessage] = useState("")
   const [retentionDays, setRetentionDays] = useState(90)
   const [showAuditViewer, setShowAuditViewer] = useState(false)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const purgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (isOpen) {
       setRetentionDays(getAuditRetentionDays())
     }
   }, [isOpen])
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      if (purgeTimerRef.current) clearTimeout(purgeTimerRef.current)
+    }
+  }, [])
 
   const handleSave = async () => {
     setIsSaving(true)
@@ -47,7 +56,7 @@ export function SettingsDialog({
       setAuditRetentionDays(retentionDays)
 
       setSaveMessage("Settings saved successfully")
-      setTimeout(() => {
+      saveTimerRef.current = setTimeout(() => {
         setSaveMessage("")
         onClose()
       }, 1500)
@@ -67,7 +76,7 @@ export function SettingsDialog({
     try {
       await purgeAllAuditLogs()
       setSaveMessage("Audit logs purged successfully")
-      setTimeout(() => setSaveMessage(""), 2000)
+      purgeTimerRef.current = setTimeout(() => setSaveMessage(""), 2000)
     } catch (error) {
       console.error("Failed to purge audit logs:", error)
       setSaveMessage("Failed to purge audit logs")
