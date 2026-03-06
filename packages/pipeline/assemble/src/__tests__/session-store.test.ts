@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { transcriptionSessionStore } from "../session-store.js"
 
-test("transcriptionSessionStore emits standardized pipeline error shape", async () => {
+test("transcriptionSessionStore emits standardized pipeline error shape", () => {
   const sessionId = `test-session-${Date.now()}`
   const received: Record<string, unknown>[] = []
 
