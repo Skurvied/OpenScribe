@@ -89,6 +89,10 @@ contextBridge.exposeInMainWorld('desktop', {
         'check-for-updates',
         'check-announcements',
         'open-release-page',
+        'get-setup-status',
+        'set-setup-completed',
+        'set-runtime-preference',
+        'get-ipc-contract',
       ]);
 
       if (!allowed.has(channel)) {

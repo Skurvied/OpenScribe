@@ -90,6 +90,16 @@ Optional desktop app path:
 pnpm electron:dev
 ```
 
+Desktop production builds:
+
+```bash
+pnpm build:desktop:mac
+pnpm build:desktop:win
+pnpm build:desktop:linux
+# or
+pnpm build:desktop:all
+```
+
 ## Quick Start (Docker)
 
 SAM is the easiest way to run OpenScribe for new contributors: one command starts the web app and local Whisper transcription service.
@@ -146,6 +156,7 @@ OpenScribe supports three workflows. **Mixed web mode is the default path.**
 - Transcription: local Whisper backend in `local-only/openscribe-backend`
 - Notes: local Ollama models (`llama3.2:*`, `gemma3:4b`)
 - No cloud inference in this path
+- First-run desktop setup wizard guides Whisper/model downloads
 - [Setup guide](./local-only/README.md)
 
 ### Cloud/OpenAI + Claude (fallback)

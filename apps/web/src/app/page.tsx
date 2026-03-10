@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react"
 import type { Encounter } from "@storage/types"
-import { useEncounters, EncounterList, IdleView, NewEncounterForm, RecordingView, ProcessingView, ErrorBoundary, PermissionsDialog, SettingsDialog, SettingsBar, ModelIndicator, useHttpsWarning } from "@ui"
+import { useEncounters, EncounterList, IdleView, NewEncounterForm, RecordingView, ProcessingView, ErrorBoundary, PermissionsDialog, SettingsDialog, SettingsBar, ModelIndicator, LocalSetupWizard, useHttpsWarning } from "@ui"
 import { NoteEditor } from "@note-rendering"
 import { useAudioRecorder, type RecordedSegment, warmupMicrophonePermission, warmupSystemAudioPermission } from "@audio"
 import { useSegmentUpload, type UploadError } from "@transcription";
@@ -62,6 +62,11 @@ type BackendProcessingEvent = {
   }
 }
 
+type SetupStatus = {
+  setup_completed?: boolean
+  selected_model?: string
+}
+
 function templateForVisitReason(visitReason?: string): "default" | "soap" {
   if (!visitReason) return "default"
   const normalized = visitReason.toLowerCase()
@@ -111,6 +116,12 @@ function HomePageContent() {
   const [localBackendAvailable, setLocalBackendAvailable] = useState(false)
   const [localDurationMs, setLocalDurationMs] = useState(0)
   const [localPaused, setLocalPaused] = useState(false)
+  const [showLocalSetupWizard, setShowLocalSetupWizard] = useState(false)
+  const [setupChecks, setSetupChecks] = useState<[string, string][]>([])
+  const [setupBusy, setSetupBusy] = useState(false)
+  const [setupStatusMessage, setSetupStatusMessage] = useState("")
+  const [supportedModels, setSupportedModels] = useState<string[]>(["llama3.2:1b"])
+  const [selectedSetupModel, setSelectedSetupModel] = useState("llama3.2:1b")
   const localSessionNameRef = useRef<string | null>(null)
   const localBackendRef = useRef<Window["desktop"]["openscribeBackend"] | null>(null)
   const localLastTickRef = useRef<number | null>(null)
@@ -130,6 +141,30 @@ function HomePageContent() {
     localBackendRef.current = backend ?? null
     setLocalBackendAvailable(!!backend)
   }, [])
+
+  useEffect(() => {
+    if (!localBackendAvailable || !localBackendRef.current) return
+
+    const loadSetup = async () => {
+      try {
+        const status = await localBackendRef.current!.invoke("get-setup-status")
+        const models = await localBackendRef.current!.invoke("list-models")
+        const setupData = status as SetupStatus & { success?: boolean }
+        const modelData = models as { success?: boolean; supported_models?: Record<string, unknown>; current_model?: string }
+        const modelNames = modelData?.supported_models ? Object.keys(modelData.supported_models) : ["llama3.2:1b"]
+        setSupportedModels(modelNames)
+        const preferredModel = setupData?.selected_model || modelData?.current_model || modelNames[0] || "llama3.2:1b"
+        setSelectedSetupModel(preferredModel)
+        if (!setupData?.setup_completed) {
+          setShowLocalSetupWizard(true)
+        }
+      } catch (error) {
+        debugWarn("Local setup status load failed", error)
+      }
+    }
+
+    void loadSetup()
+  }, [localBackendAvailable])
 
   useEffect(() => {
     if (processingMode !== "local") return
@@ -206,7 +241,62 @@ function HomePageContent() {
   const handleProcessingModeChange = (mode: ProcessingMode) => {
     setProcessingModeState(mode)
     setPreferences({ processingMode: mode })
+    void localBackendRef.current?.invoke("set-runtime-preference", mode)
   }
+
+  const runSetupAction = useCallback(
+    async (label: string, action: () => Promise<unknown>) => {
+      setSetupBusy(true)
+      setSetupStatusMessage(label)
+      try {
+        const result = await action()
+        const payload = result as { success?: boolean; message?: string; error?: string }
+        if (payload?.success === false) {
+          throw new Error(payload.error || `${label} failed`)
+        }
+        if (payload?.message) {
+          setSetupStatusMessage(payload.message)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setSetupStatusMessage(message)
+      } finally {
+        setSetupBusy(false)
+      }
+    },
+    [],
+  )
+
+  const handleRunSetupCheck = useCallback(async () => {
+    if (!localBackendRef.current) return
+    await runSetupAction("Running system check...", async () => {
+      const result = await localBackendRef.current!.invoke("startup-setup-check")
+      const payload = result as { checks?: [string, string][] }
+      setSetupChecks(payload?.checks || [])
+      return result
+    })
+  }, [runSetupAction])
+
+  const handleDownloadWhisper = useCallback(async () => {
+    if (!localBackendRef.current) return
+    await runSetupAction("Downloading Whisper model...", async () => localBackendRef.current!.invoke("setup-whisper"))
+  }, [runSetupAction])
+
+  const handleDownloadSetupModel = useCallback(async () => {
+    if (!localBackendRef.current) return
+    await runSetupAction(`Downloading ${selectedSetupModel}...`, async () =>
+      localBackendRef.current!.invoke("setup-ollama-and-model", selectedSetupModel),
+    )
+  }, [runSetupAction, selectedSetupModel])
+
+  const handleCompleteSetup = useCallback(async () => {
+    if (!localBackendRef.current) return
+    await runSetupAction("Saving setup status...", async () => {
+      await localBackendRef.current!.invoke("set-setup-completed", true)
+      return { success: true, message: "Local setup completed." }
+    })
+    setShowLocalSetupWizard(false)
+  }, [runSetupAction])
 
   const useLocalBackend = processingMode === "local" && localBackendAvailable
 
@@ -777,6 +867,21 @@ function HomePageContent() {
   }
 
   useEffect(() => {
+    if (!localBackendRef.current) return
+    const backend = localBackendRef.current
+    const progressHandler = (_event: unknown, payload: unknown) => {
+      const data = payload as { model?: string; progress?: string }
+      if (data?.progress) {
+        setSetupStatusMessage(`${data.model || "Model"}: ${data.progress}`)
+      }
+    }
+    backend.on("model-pull-progress", progressHandler)
+    return () => {
+      backend.removeAllListeners("model-pull-progress")
+    }
+  }, [localBackendAvailable])
+
+  useEffect(() => {
     if (!useLocalBackend || !localBackendRef.current) return
 
     const backend = localBackendRef.current
@@ -978,6 +1083,20 @@ function HomePageContent() {
 
   return (
     <>
+      <LocalSetupWizard
+        isOpen={showLocalSetupWizard}
+        checks={setupChecks}
+        selectedModel={selectedSetupModel}
+        supportedModels={supportedModels}
+        isBusy={setupBusy}
+        statusMessage={setupStatusMessage}
+        onSelectedModelChange={setSelectedSetupModel}
+        onRunCheck={handleRunSetupCheck}
+        onDownloadWhisper={handleDownloadWhisper}
+        onDownloadModel={handleDownloadSetupModel}
+        onComplete={handleCompleteSetup}
+        onSkip={() => setShowLocalSetupWizard(false)}
+      />
       {showPermissionsDialog && <PermissionsDialog onComplete={handlePermissionsComplete} />}
       <SettingsDialog
         isOpen={showSettingsDialog}

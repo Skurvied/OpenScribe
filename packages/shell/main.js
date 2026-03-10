@@ -14,6 +14,7 @@ const {
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const DEV_SERVER_URL = process.env.ELECTRON_START_URL || 'http://localhost:3000';
 const isMac = process.platform === 'darwin';
+const enableDesktopDevtools = process.env.DEBUG_DESKTOP === '1';
 
 // Set app name (for development mode and dock)
 if (app) {
@@ -52,8 +53,9 @@ const createMainWindow = async () => {
     } else {
       const server = await ensureNextServer();
       await window.loadURL(server.url);
-      // Open DevTools in production temporarily for debugging CSS issue
-      window.webContents.openDevTools({ mode: 'detach' });
+      if (enableDesktopDevtools) {
+        window.webContents.openDevTools({ mode: 'detach' });
+      }
     }
   } catch (error) {
     dialog.showErrorBox(

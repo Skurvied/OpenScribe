@@ -56,7 +56,7 @@ class WhisperTranscriber:
     falls back to openai-whisper (PyTorch) if not.
     """
 
-    def __init__(self, model_size: str = "base"):
+    def __init__(self, model_size: str = "tiny.en"):
         """
         Initialize the Whisper transcriber.
 
@@ -143,8 +143,8 @@ class WhisperTranscriber:
         try:
             backend_pref = os.getenv("OPENSCRIBE_WHISPER_BACKEND", "").strip().lower()
             if not backend_pref:
-                # Default to openai-whisper for reliability on mixed Metal workloads.
-                backend_pref = "openai"
+                # Default to whisper.cpp for local packaged runtime consistency.
+                backend_pref = "cpp"
 
             if backend_pref in {"openai", "openai-whisper"} and OPENAI_WHISPER_AVAILABLE:
                 self._load_openai_whisper()

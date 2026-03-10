@@ -13,7 +13,11 @@ This directory contains the **current local runtime** used by the Electron app b
   - Ollama local models
   - Config default model: `llama3.2:1b`
   - Supported/recommended: `llama3.2:1b`, `llama3.2:3b`, `gemma3:4b`
-  - Setup flow in Electron currently pulls `llama3.2:3b` by default
+  - First-run setup flow in Electron uses curated model selection and download
+
+- Telemetry
+  - Desktop telemetry is disabled by default.
+  - Users can opt-in later in app settings.
 
 ## Important Clarification
 
