@@ -1504,6 +1504,42 @@ def pull_model(model_name):
         sys.exit(1)
 
 
+@cli.command()
+def e2e_self_test():
+    """Deterministic CI self-test for packaged backend integration."""
+    if os.getenv("OPENSCRIBE_E2E_STUB_PIPELINE") != "1":
+        print(json.dumps({"success": False, "error": "e2e_stub_pipeline_disabled"}))
+        return
+
+    recorder = SimpleRecorder()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    transcript_path = recorder.transcripts_dir / f"{timestamp}_e2e_transcript.txt"
+    summary_path = recorder.output_dir / f"{timestamp}_e2e_summary.json"
+
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text("e2e deterministic transcript", encoding="utf-8")
+
+    config = get_config()
+    payload = {
+        "session_info": {
+            "name": "E2E Smoke",
+            "processed_at": datetime.now().isoformat(),
+            "summary_file": str(summary_path),
+            "transcript_file": str(transcript_path),
+        },
+        "summary": "e2e deterministic summary",
+        "participants": ["speaker-a", "speaker-b"],
+        "key_points": ["pipeline_ok", "storage_ok"],
+        "action_items": ["none"],
+        "clinical_note": "e2e deterministic note",
+        "transcript": "e2e deterministic transcript",
+        "model": config.get_model(),
+    }
+    summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(json.dumps({"success": True, "summary_file": str(summary_path), "transcript_file": str(transcript_path)}))
+
+
 @cli.command(name='whisper-server')
 @click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind')
 @click.option('--port', default=8002, show_default=True, type=int, help='Port to bind')

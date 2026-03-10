@@ -9,12 +9,14 @@ const {
   shutdownTelemetry,
   trackEvent,
   stopWhisperService,
+  runBackendHealthProbe,
 } = require('./openscribe-backend');
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const DEV_SERVER_URL = process.env.ELECTRON_START_URL || 'http://localhost:3000';
 const isMac = process.platform === 'darwin';
 const enableDesktopDevtools = process.env.DEBUG_DESKTOP === '1';
+const isE2ESmoke = process.env.OPENSCRIBE_E2E_SMOKE === '1';
 
 // Set app name (for development mode and dock)
 if (app) {
@@ -111,6 +113,18 @@ const boot = async () => {
   registerGlobalHotkey(mainWindow);
   await initTelemetry();
   trackEvent('app_opened');
+
+  if (isE2ESmoke) {
+    const probe = await runBackendHealthProbe();
+    if (!probe.success) {
+      console.error('OPENSCRIBE_E2E_SMOKE_FAIL', JSON.stringify(probe));
+      app.exit(1);
+      return;
+    }
+    console.log('OPENSCRIBE_E2E_SMOKE_PASS');
+    setTimeout(() => app.exit(0), 1200);
+    return;
+  }
 
   app.on('activate', async () => {
     // Get all windows including any that might be hidden or minimized

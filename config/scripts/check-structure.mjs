@@ -6,13 +6,29 @@ import path from "node:path"
 
 const root = path.resolve(process.cwd())
 
-const allowedRootDirs = new Set(["apps", "packages", "config", "build", "docker", "node_modules"])
+const allowedRootDirs = new Set([
+  "apps",
+  "packages",
+  "config",
+  "build",
+  "docker",
+  "docs",
+  "local-only",
+  "models",
+  "recordings",
+  "output",
+  "scripts",
+  "node_modules",
+])
 const allowedRootFiles = new Set([
   "package.json",
   "pnpm-lock.yaml",
   "tsconfig.json",
   "README.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
   "architecture.md",
+  "requirements.txt",
   ".gitignore",
   "BUILD_STATUS.md",
   "MONITORING_GUIDE.md",
@@ -21,6 +37,7 @@ const allowedRootFiles = new Set([
   "TEST_SESSION.md",
   ".dockerignore",
   "docker-compose.sam.yml",
+  "tsconfig.tsbuildinfo",
 ])
 const buildArtifacts = new Set([".next", ".tests-dist", "dist"])
 const configPattern = /\.config\.(?:js|cjs|mjs|ts)$/

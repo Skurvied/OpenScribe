@@ -100,6 +100,15 @@ pnpm build:desktop:linux
 pnpm build:desktop:all
 ```
 
+GA support target for packaged desktop releases:
+- macOS (mainstream current) `x64`, `arm64`
+- Windows (mainstream current) `x64`
+- Linux (mainstream current desktop distros) `x64`, `arm64`
+- Recommended minimum: 8GB RAM, 20GB free disk
+
+See release gate details in [docs/RELEASE_READINESS_CHECKLIST.md](./docs/RELEASE_READINESS_CHECKLIST.md).
+Manual reviewer sign-off template: [docs/MANUAL_SIGNOFF_TEMPLATE.md](./docs/MANUAL_SIGNOFF_TEMPLATE.md).
+
 ## Quick Start (Docker)
 
 SAM is the easiest way to run OpenScribe for new contributors: one command starts the web app and local Whisper transcription service.

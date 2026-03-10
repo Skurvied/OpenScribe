@@ -40,6 +40,8 @@ jobs:
       - name: Unit Tests
         run: pnpm test:llm
 
+      - name: Desktop IPC Contract Test
+        run: pnpm test:e2e:desktop:ipc
+
       - name: Dependency Audit
         run: pnpm audit --audit-level high
-

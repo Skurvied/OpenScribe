@@ -15,7 +15,7 @@ on:
 
 jobs:
   build-desktop:
-    name: Build ${{ matrix.target }} on ${{ matrix.os }}
+    name: Build ${{ matrix.target }}-${{ matrix.arch }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,10 +23,24 @@ jobs:
         include:
           - os: macos-latest
             target: mac
+            arch: x64
+            platform_id: darwin
+          - os: macos-latest
+            target: mac
+            arch: arm64
+            platform_id: darwin
           - os: windows-latest
             target: win
+            arch: x64
+            platform_id: win32
           - os: ubuntu-latest
             target: linux
+            arch: x64
+            platform_id: linux
+          - os: ubuntu-latest
+            target: linux
+            arch: arm64
+            platform_id: linux
     env:
       CSC_LINK: ${{ secrets.CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -35,6 +49,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
       WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,17 +78,41 @@ jobs:
           cd local-only/openscribe-backend
           PYTHONPATH=. python -m unittest discover -s tests -p "test*_unittest.py"
 
-      - name: Build Desktop Target
-        run: pnpm build:desktop:${{ matrix.target }}
+      - name: Provision Clean Environment
+        run: pnpm test:e2e:desktop:provision
+
+      - name: Generate E2E Fixtures
+        run: pnpm test:e2e:desktop:fixtures
+
+      - name: Build Desktop Installer
+        run: node scripts/build-desktop.mjs ${{ matrix.target }} ${{ matrix.arch }} installer
+
+      - name: Build Desktop Unpacked Dir
+        run: node scripts/build-desktop.mjs ${{ matrix.target }} ${{ matrix.arch }} dir
 
       - name: Smoke Check Artifacts
         run: pnpm test:desktop:artifacts
+
+      - name: Runtime Launch Smoke
+        run: pnpm test:e2e:desktop:launch
+
+      - name: Install Lifecycle Smoke
+        run: pnpm test:e2e:desktop:lifecycle
+
+      - name: IPC Contract Regression
+        run: pnpm test:e2e:desktop:ipc
+
+      - name: Signing/Notarization Gate
+        run: pnpm test:e2e:desktop:signing
+        env:
+          CI_PLATFORM: ${{ matrix.platform_id }}
 
       - name: Generate Release Manifest
         run: pnpm build:release:manifest
         env:
           RELEASE_VERSION: ${{ github.ref_name }}
           RELEASE_BASE_URL: ${{ inputs.release_base_url }}
+          SIGNATURE_STATUS: VERIFIED
 
       - name: Generate Checksums
         run: pnpm build:release:checksums
@@ -81,6 +120,23 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.target }}
+          name: desktop-${{ matrix.target }}-${{ matrix.arch }}
           path: |
             build/dist/**
+
+  validate-release-evidence:
+    name: Validate Release Evidence
+    runs-on: ubuntu-latest
+    needs: build-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download All Desktop Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: build/evidence
+          pattern: desktop-*
+
+      - name: Validate 5-target evidence and integrity files
+        run: node scripts/e2e/validate-release-evidence.mjs

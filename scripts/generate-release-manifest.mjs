@@ -7,6 +7,7 @@ const distDir = resolve(process.cwd(), "build", "dist")
 const outPath = resolve(process.cwd(), "build", "dist", "release-manifest.json")
 const version = process.env.RELEASE_VERSION || process.env.npm_package_version || "0.0.0"
 const baseDownloadUrl = process.env.RELEASE_BASE_URL || ""
+const signatureStatus = process.env.SIGNATURE_STATUS || "UNVERIFIED"
 
 function sha256(filePath) {
   return new Promise((resolveHash, rejectHash) => {
@@ -47,7 +48,7 @@ async function main() {
       platform: detectPlatform(name),
       arch: detectArch(name),
       sha256: await sha256(file),
-      signatureStatus: "PENDING_VERIFICATION",
+      signatureStatus,
       downloadUrl: baseDownloadUrl ? `${baseDownloadUrl.replace(/\/+$/, "")}/${name}` : name,
     })
   }

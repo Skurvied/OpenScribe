@@ -1542,6 +1542,27 @@ function getDownloadUrl(assets) {
   return assets.length > 0 ? assets[0].browser_download_url : null;
 }
 
+async function runBackendHealthProbe() {
+  try {
+    const setupStatus = await runPythonScript(null, 'simple_recorder.py', ['setup-status'], true);
+    JSON.parse(setupStatus);
+    const modelList = await runPythonScript(null, 'simple_recorder.py', ['list-models'], true);
+    JSON.parse(modelList);
+
+    if (process.env.OPENSCRIBE_E2E_STUB_PIPELINE === '1') {
+      const selfTest = await runPythonScript(null, 'simple_recorder.py', ['e2e-self-test'], true);
+      const parsed = JSON.parse(selfTest.trim());
+      if (!parsed.success) {
+        return fail('E2E_SELF_TEST_FAILED', parsed.error || 'e2e-self-test failed');
+      }
+    }
+
+    return ok({ probe: 'backend-health', status: 'ok' });
+  } catch (error) {
+    return fail('BACKEND_HEALTH_PROBE_FAILED', error.message);
+  }
+}
+
 module.exports = {
   registerOpenScribeIpcHandlers,
   registerGlobalHotkey,
@@ -1550,4 +1571,9 @@ module.exports = {
   trackEvent,
   durationBucket,
   stopWhisperService,
+  runBackendHealthProbe,
+  __test: {
+    compareVersions,
+    getDownloadUrl,
+  },
 };
