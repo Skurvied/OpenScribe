@@ -30,6 +30,8 @@ OpenScribe is a free MIT license open source AI Medical Scribe that helps clinic
 - [Demo](https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28)
 - [Architecture](./architecture.md)
 - [Contributing](./CONTRIBUTING.md)
+- [Download and Use Desktop](./docs/DOWNLOAD_AND_USE.md)
+- [Desktop Release Runbook](./docs/RELEASE_RUNBOOK.md)
 
 
 The current project is not yet HIPAA compliant; however, we recently signed up with Delve and will be HIPAA compliant in the next few weeks.
@@ -39,6 +41,16 @@ The current project is not yet HIPAA compliant; however, we recently signed up w
 [Demo](https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28)
 
 [![Watch Demo](.github/demo.gif)](https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28)
+
+## Download Desktop App (No Dev Setup)
+
+If you only want to try OpenScribe as an app:
+
+1. Open [latest releases](https://github.com/sammargolis/OpenScribe/releases/latest).
+2. Download the installer for your OS/arch.
+3. Run installer and complete first-run setup wizard.
+
+Full guide: [docs/DOWNLOAD_AND_USE.md](./docs/DOWNLOAD_AND_USE.md)
 
 
 ## Quick Start (5 minutes)

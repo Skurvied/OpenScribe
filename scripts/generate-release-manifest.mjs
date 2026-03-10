@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-import { readdirSync, statSync, createReadStream, writeFileSync } from "node:fs"
-import { join, basename, resolve } from "node:path"
+import { readdirSync, statSync, createReadStream, writeFileSync, mkdirSync } from "node:fs"
+import { join, basename, resolve, dirname } from "node:path"
 import { createHash } from "node:crypto"
 
-const distDir = resolve(process.cwd(), "build", "dist")
-const outPath = resolve(process.cwd(), "build", "dist", "release-manifest.json")
+const distDir = resolve(process.cwd(), process.env.DIST_DIR || "build/dist")
+const outPath = resolve(
+  process.cwd(),
+  process.env.RELEASE_MANIFEST_OUT || `${process.env.DIST_DIR || "build/dist"}/release-manifest.json`,
+)
 const version = process.env.RELEASE_VERSION || process.env.npm_package_version || "0.0.0"
 const baseDownloadUrl = process.env.RELEASE_BASE_URL || ""
 const signatureStatus = process.env.SIGNATURE_STATUS || "UNVERIFIED"
@@ -35,6 +38,7 @@ function detectArch(name) {
 }
 
 async function main() {
+  mkdirSync(dirname(outPath), { recursive: true })
   const files = readdirSync(distDir)
     .map((name) => join(distDir, name))
     .filter((p) => statSync(p).isFile())

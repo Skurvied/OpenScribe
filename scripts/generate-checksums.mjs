@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-import { readdirSync, statSync, createReadStream, writeFileSync } from "node:fs"
-import { join, resolve, basename } from "node:path"
+import { readdirSync, statSync, createReadStream, writeFileSync, mkdirSync } from "node:fs"
+import { join, resolve, basename, dirname } from "node:path"
 import { createHash } from "node:crypto"
 
-const distDir = resolve(process.cwd(), "build", "dist")
-const outPath = resolve(process.cwd(), "build", "dist", "checksums.txt")
+const distDir = resolve(process.cwd(), process.env.DIST_DIR || "build/dist")
+const outPath = resolve(
+  process.cwd(),
+  process.env.CHECKSUMS_OUT || `${process.env.DIST_DIR || "build/dist"}/checksums.txt`,
+)
 
 function sha256(filePath) {
   return new Promise((resolveHash, rejectHash) => {
@@ -17,6 +20,7 @@ function sha256(filePath) {
 }
 
 async function main() {
+  mkdirSync(dirname(outPath), { recursive: true })
   const files = readdirSync(distDir)
     .map((name) => join(distDir, name))
     .filter((p) => statSync(p).isFile())

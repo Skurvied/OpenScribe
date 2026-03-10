@@ -35,6 +35,8 @@
     "build:backend": "node local-only/openscribe-backend/scripts/build-backend.mjs",
     "build:release:manifest": "node scripts/generate-release-manifest.mjs",
     "build:release:checksums": "node scripts/generate-checksums.mjs",
+    "build:release:collect": "node scripts/collect-release-assets.mjs",
+    "release:rc:local": "pnpm lint:structure && pnpm build:test && PYTHONPATH=local-only/openscribe-backend python3 -m unittest discover -s local-only/openscribe-backend/tests -p \"test*_unittest.py\" && node scripts/build-desktop.mjs current && node scripts/build-desktop.mjs current \"\" dir && pnpm test:desktop:artifacts && pnpm test:e2e:desktop:launch && pnpm test:e2e:desktop:lifecycle && pnpm build:release:manifest && pnpm build:release:checksums",
     "test:desktop:artifacts": "node scripts/smoke-desktop-artifacts.mjs",
     "test:e2e:desktop:provision": "node scripts/e2e/provision-clean-env.mjs",
     "test:e2e:desktop:fixtures": "node scripts/e2e/generate-fixtures.mjs",
