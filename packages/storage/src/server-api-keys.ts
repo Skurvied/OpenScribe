@@ -9,6 +9,20 @@ import crypto from "crypto"
 
 const ALGORITHM = "aes-256-gcm"
 
+function isPlaceholderKey(raw: string | undefined): boolean {
+  const key = (raw || "").trim()
+  if (!key) return true
+  const normalized = key.toLowerCase()
+  if (normalized.includes("your_key")) return true
+  if (normalized.includes("your-key")) return true
+  if (normalized.includes("yourkey")) return true
+  if (normalized.includes("placeholder")) return true
+  if (normalized === "sk-ant-your-key") return true
+  if (normalized === "sk-ant-your_key_here") return true
+  if (normalized === "sk-ant-your-key-here") return true
+  return false
+}
+
 function getEncryptionKeySync(): Buffer {
   const configDir = typeof process !== "undefined" && process.env.NODE_ENV === "production"
     ? (() => {
@@ -117,8 +131,8 @@ export function getAnthropicApiKey(): string {
     const decrypted = decryptDataSync(fileContent)
     const config = JSON.parse(decrypted)
     
-    if (config.anthropicApiKey) {
-      return config.anthropicApiKey
+    if (config.anthropicApiKey && !isPlaceholderKey(config.anthropicApiKey)) {
+      return String(config.anthropicApiKey).trim()
     }
   } catch (error) {
     // Config file doesn't exist or is invalid, fall through to env var
@@ -126,8 +140,8 @@ export function getAnthropicApiKey(): string {
 
   // Fallback to environment variable
   const key = process.env.ANTHROPIC_API_KEY
-  if (!key) {
+  if (isPlaceholderKey(key)) {
     throw new Error("Missing ANTHROPIC_API_KEY. Please configure your API key in Settings.")
   }
-  return key
+  return String(key).trim()
 }
