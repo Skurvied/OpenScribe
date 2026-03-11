@@ -10,6 +10,9 @@ import { generateClinicalNote } from "@/app/actions"
 import {
   getPreferences,
   setPreferences,
+  getApiKeys,
+  setApiKeys,
+  validateApiKey,
   type NoteLength,
   type ProcessingMode,
   debugLog,
@@ -111,6 +114,9 @@ function HomePageContent() {
   const permissionCheckInProgressRef = useRef(false)
 
   const [showSettingsDialog, setShowSettingsDialog] = useState(false)
+  const [showMixedKeyPrompt, setShowMixedKeyPrompt] = useState(false)
+  const [anthropicApiKeyInput, setAnthropicApiKeyInput] = useState("")
+  const [hasAnthropicApiKey, setHasAnthropicApiKey] = useState(false)
   const [noteLength, setNoteLengthState] = useState<NoteLength>("long")
   const [processingMode, setProcessingModeState] = useState<ProcessingMode>("mixed")
   const [localBackendAvailable, setLocalBackendAvailable] = useState(false)
@@ -133,6 +139,22 @@ function HomePageContent() {
 
     // Initialize audit logging system (cleanup old entries, setup periodic cleanup)
     void initializeAuditLog()
+  }, [])
+
+  useEffect(() => {
+    const loadApiKeys = async () => {
+      try {
+        const keys = await getApiKeys()
+        const anthropicKey = (keys.anthropicApiKey || "").trim()
+        setAnthropicApiKeyInput(anthropicKey)
+        setHasAnthropicApiKey(validateApiKey(anthropicKey, "anthropic"))
+      } catch (error) {
+        debugWarn("Failed to load API keys", error)
+        setAnthropicApiKeyInput("")
+        setHasAnthropicApiKey(false)
+      }
+    }
+    void loadApiKeys()
   }, [])
 
   useEffect(() => {
@@ -173,6 +195,12 @@ function HomePageContent() {
     setProcessingModeState("mixed")
     void setPreferences({ processingMode: "mixed" })
   }, [localBackendAvailable, processingMode])
+
+  useEffect(() => {
+    if (processingMode === "mixed" && !hasAnthropicApiKey) {
+      setShowMixedKeyPrompt(true)
+    }
+  }, [processingMode, hasAnthropicApiKey])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -242,7 +270,22 @@ function HomePageContent() {
     setProcessingModeState(mode)
     setPreferences({ processingMode: mode })
     void localBackendRef.current?.invoke("set-runtime-preference", mode)
+    if (mode === "mixed" && !hasAnthropicApiKey) {
+      setShowMixedKeyPrompt(true)
+    }
+    if (mode === "local") {
+      setShowMixedKeyPrompt(false)
+    }
   }
+
+  const handleSaveAnthropicApiKey = useCallback(async (value: string) => {
+    const trimmed = value.trim()
+    await setApiKeys({ anthropicApiKey: trimmed })
+    setHasAnthropicApiKey(validateApiKey(trimmed, "anthropic"))
+    if (validateApiKey(trimmed, "anthropic")) {
+      setShowMixedKeyPrompt(false)
+    }
+  }, [])
 
   const runSetupAction = useCallback(
     async (label: string, action: () => Promise<unknown>) => {
@@ -627,6 +670,11 @@ function HomePageContent() {
     visit_reason: string
   }) => {
     try {
+      if (!useLocalBackend && !hasAnthropicApiKey) {
+        setShowMixedKeyPrompt(true)
+        setShowSettingsDialog(true)
+        return
+      }
       if (!useLocalBackend) {
         cleanupSession()
       }
@@ -1106,7 +1154,45 @@ function HomePageContent() {
         processingMode={processingMode}
         onProcessingModeChange={handleProcessingModeChange}
         localBackendAvailable={localBackendAvailable}
+        anthropicApiKey={anthropicApiKeyInput}
+        onAnthropicApiKeyChange={setAnthropicApiKeyInput}
+        onSaveAnthropicApiKey={handleSaveAnthropicApiKey}
       />
+      {showMixedKeyPrompt && processingMode === "mixed" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-background p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-foreground">Anthropic Key Required for Mixed Mode</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Mixed mode uses Claude for note generation. Add your Anthropic key in Settings, or switch to local-only mode.
+            </p>
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                className="rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                onClick={() => {
+                  setShowMixedKeyPrompt(false)
+                  setShowSettingsDialog(true)
+                }}
+              >
+                Add Key in Settings
+              </button>
+              <button
+                type="button"
+                disabled={!localBackendAvailable}
+                className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                  if (!localBackendAvailable) return
+                  handleProcessingModeChange("local")
+                  setShowMixedKeyPrompt(false)
+                  setShowSettingsDialog(false)
+                }}
+              >
+                Switch to Local-only
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {httpsWarning && (
         <div className="fixed top-0 left-0 right-0 z-50 bg-destructive px-4 py-2 text-center text-sm font-semibold text-destructive-foreground">
           {httpsWarning}

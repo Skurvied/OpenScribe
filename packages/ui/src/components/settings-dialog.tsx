@@ -16,6 +16,9 @@ interface SettingsDialogProps {
   processingMode: ProcessingMode
   onProcessingModeChange: (mode: ProcessingMode) => void
   localBackendAvailable: boolean
+  anthropicApiKey: string
+  onAnthropicApiKeyChange: (value: string) => void
+  onSaveAnthropicApiKey: (value: string) => Promise<void>
 }
 
 export function SettingsDialog({
@@ -26,6 +29,9 @@ export function SettingsDialog({
   processingMode,
   onProcessingModeChange,
   localBackendAvailable,
+  anthropicApiKey,
+  onAnthropicApiKeyChange,
+  onSaveAnthropicApiKey,
 }: SettingsDialogProps) {
   const [isSaving, setIsSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState("")
@@ -52,6 +58,7 @@ export function SettingsDialog({
     setSaveMessage("")
 
     try {
+      await onSaveAnthropicApiKey(anthropicApiKey)
       // Save retention policy
       setAuditRetentionDays(retentionDays)
 
@@ -183,6 +190,32 @@ export function SettingsDialog({
                 Local-only mode requires the desktop backend runtime to be available.
               </p>
             )}
+          </div>
+
+          {/* Divider */}
+          <div className="border-t border-border" />
+
+          {/* API Keys */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium text-foreground">Cloud API Key (Mixed Mode)</Label>
+            <p className="text-sm text-muted-foreground">
+              Mixed mode requires an Anthropic key for note generation.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="anthropic-api-key" className="text-sm font-medium text-foreground">
+                Anthropic API Key
+              </Label>
+              <input
+                id="anthropic-api-key"
+                type="password"
+                value={anthropicApiKey}
+                onChange={(e) => onAnthropicApiKeyChange(e.target.value)}
+                placeholder="sk-ant-..."
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
           </div>
 
           {/* Divider */}
