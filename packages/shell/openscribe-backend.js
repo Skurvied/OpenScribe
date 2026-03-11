@@ -200,9 +200,7 @@ function registerGlobalHotkey(mainWindow) {
   const hotkey = process.platform === 'darwin' ? 'Command+Shift+R' : 'Ctrl+Shift+R';
   const registered = globalShortcut.register(hotkey, () => {
     console.log('Global hotkey triggered: toggle recording');
-    if (mainWindow) {
-      mainWindow.webContents.send('toggle-recording-hotkey');
-    }
+    sendToRenderer(mainWindow, 'toggle-recording-hotkey');
   });
 
   if (registered) {
@@ -278,8 +276,23 @@ function runPythonScript(mainWindow, script, args = [], silent = false) {
 }
 
 function sendDebugLog(mainWindow, message) {
-  if (mainWindow) {
-    mainWindow.webContents.send('debug-log', message);
+  sendToRenderer(mainWindow, 'debug-log', message);
+}
+
+function sendToRenderer(mainWindow, channel, ...payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  const contents = mainWindow.webContents;
+  if (!contents || contents.isDestroyed()) {
+    return false;
+  }
+  try {
+    contents.send(channel, ...payload);
+    return true;
+  } catch (error) {
+    console.warn(`Skipping renderer send for channel "${channel}":`, error.message);
+    return false;
   }
 }
 
@@ -419,7 +432,7 @@ async function processNextInQueue(mainWindow) {
           (m) => m.session_info?.name === currentProcessingJob.sessionName
         );
 
-        mainWindow.webContents.send('processing-complete', {
+        sendToRenderer(mainWindow, 'processing-complete', {
           success: true,
           sessionName: currentProcessingJob.sessionName,
           message: 'Processing completed successfully',
@@ -427,7 +440,7 @@ async function processNextInQueue(mainWindow) {
         });
       } catch (error) {
         console.error('Error getting processed meeting data:', error);
-        mainWindow.webContents.send('processing-complete', {
+        sendToRenderer(mainWindow, 'processing-complete', {
           success: true,
           sessionName: currentProcessingJob.sessionName,
           message: 'Processing completed successfully',
@@ -439,7 +452,7 @@ async function processNextInQueue(mainWindow) {
     trackEvent('error_occurred', { error_type: 'processing_queue' });
 
     if (mainWindow) {
-      mainWindow.webContents.send('processing-complete', {
+      sendToRenderer(mainWindow, 'processing-complete', {
         success: false,
         sessionName: currentProcessingJob.sessionName,
         error: error.message,
@@ -803,7 +816,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             if (transcriptionDone) {
               const durationMs = Math.round(parseFloat(transcriptionDone[1]) * 1000);
               const endedAtMs = Date.now();
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'transcription',
                 status: 'done',
                 endedAtMs,
@@ -816,7 +829,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             if (noteDone) {
               const durationMs = Math.round(parseFloat(noteDone[1]) * 1000);
               const endedAtMs = Date.now();
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'note_generation',
                 status: 'done',
                 endedAtMs,
@@ -826,13 +839,13 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             }
 
             if (trimmed.startsWith('📝 Transcribing:')) {
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'transcription',
                 status: 'in-progress',
                 startedAtMs: Date.now(),
               });
             } else if (trimmed.startsWith('🧠 Generating summary')) {
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'note_generation',
                 status: 'in-progress',
                 startedAtMs: Date.now(),
@@ -850,7 +863,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
                   (m) => m.session_info?.name === actualSessionName
                 );
 
-                mainWindow.webContents.send('processing-complete', {
+                sendToRenderer(mainWindow, 'processing-complete', {
                   success: true,
                   sessionName: actualSessionName,
                   message: 'Recording and processing completed successfully',
@@ -859,7 +872,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
                 processingCompleteSent = true;
               })
               .catch(() => {
-                mainWindow.webContents.send('processing-complete', {
+                sendToRenderer(mainWindow, 'processing-complete', {
                   success: true,
                   sessionName: actualSessionName,
                   message: 'Recording and processing completed successfully',
@@ -891,7 +904,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           const message = lastBackendError.includes('summarizer_unavailable')
             ? 'Summarizer unavailable. Install/start Ollama and pull a model (e.g. `ollama pull llama3.2:3b`).'
             : (lastBackendError || `Recording backend failed with exit code ${code}`);
-          mainWindow.webContents.send('processing-complete', {
+          sendToRenderer(mainWindow, 'processing-complete', {
             success: false,
             sessionName: actualSessionName,
             error: message,
@@ -1297,7 +1310,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, output);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('model-pull-progress', {
+            sendToRenderer(mainWindow, 'model-pull-progress', {
               model: modelName,
               progress: output,
             });
@@ -1309,7 +1322,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, output);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('model-pull-progress', {
+            sendToRenderer(mainWindow, 'model-pull-progress', {
               model: modelName,
               progress: output,
             });
@@ -1321,7 +1334,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             sendDebugLog(mainWindow, `Successfully pulled model: ${modelName}`);
 
             if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('model-pull-complete', {
+              sendToRenderer(mainWindow, 'model-pull-complete', {
                 model: modelName,
                 success: true,
               });
@@ -1332,7 +1345,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             sendDebugLog(mainWindow, `Failed to pull model: ${modelName}`);
 
             if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('model-pull-complete', {
+              sendToRenderer(mainWindow, 'model-pull-complete', {
                 model: modelName,
                 success: false,
                 error: `Process exited with code ${code}`,
@@ -1347,7 +1360,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, `Error pulling model: ${error.message}`);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('model-pull-complete', {
+            sendToRenderer(mainWindow, 'model-pull-complete', {
               model: modelName,
               success: false,
               error: error.message,
