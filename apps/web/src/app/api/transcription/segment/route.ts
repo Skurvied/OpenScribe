@@ -12,6 +12,47 @@ function jsonError(status: number, code: string, message: string) {
   })
 }
 
+function getWavDataChunk(buffer: ArrayBuffer): { offset: number; size: number } | null {
+  if (buffer.byteLength < 44) return null
+  const view = new DataView(buffer)
+  let offset = 12
+  while (offset + 8 <= buffer.byteLength) {
+    const chunkId = String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3),
+    )
+    const chunkSize = view.getUint32(offset + 4, true)
+    const chunkStart = offset + 8
+    if (chunkId === "data") {
+      return { offset: chunkStart, size: Math.min(chunkSize, buffer.byteLength - chunkStart) }
+    }
+    offset = chunkStart + chunkSize + (chunkSize % 2)
+  }
+  return null
+}
+
+function isLikelySilentPcm16(buffer: ArrayBuffer): boolean {
+  const data = getWavDataChunk(buffer)
+  if (!data || data.size < 2) return true
+  const view = new DataView(buffer, data.offset, data.size)
+  const sampleCount = Math.floor(data.size / 2)
+  if (sampleCount === 0) return true
+
+  let sumSquares = 0
+  let peak = 0
+  for (let i = 0; i < sampleCount; i += 1) {
+    const raw = view.getInt16(i * 2, true)
+    const normalized = raw / 32768
+    const abs = Math.abs(normalized)
+    if (abs > peak) peak = abs
+    sumSquares += normalized * normalized
+  }
+  const rms = Math.sqrt(sumSquares / sampleCount)
+  return rms < 0.003 && peak < 0.02
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
@@ -49,6 +90,18 @@ export async function POST(req: NextRequest) {
 
     if (wavInfo.durationMs < 8000 || wavInfo.durationMs > 12000) {
       return jsonError(400, "validation_error", "Segment duration must be between 8s and 12s")
+    }
+    if (isLikelySilentPcm16(arrayBuffer)) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "blank_audio",
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      )
     }
 
     try {

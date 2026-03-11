@@ -117,6 +117,7 @@ function HomePageContent() {
   const [view, setView] = useState<ViewState>({ type: "idle" })
   const [transcriptionStatus, setTranscriptionStatus] = useState<StepStatus>("pending")
   const [noteGenerationStatus, setNoteGenerationStatus] = useState<StepStatus>("pending")
+  const [transcriptionErrorMessage, setTranscriptionErrorMessage] = useState("")
   const [processingMetrics, setProcessingMetrics] = useState<ProcessingMetrics>({})
   const [sessionId, setSessionId] = useState<string | null>(null)
 
@@ -288,6 +289,17 @@ function HomePageContent() {
     setPreferences({ noteLength: length })
   }
 
+  const isBlankTranscriptText = useCallback((value: string): boolean => {
+    const normalized = value.trim().toLowerCase()
+    return (
+      normalized.length === 0 ||
+      normalized === "[blank_audio]" ||
+      normalized === "audio file too small or empty" ||
+      normalized === "no speech detected in audio" ||
+      normalized === "none"
+    )
+  }, [])
+
   const ensureMixedRuntimeReady = useCallback(async (showPromptOnFailure = true): Promise<{ ok: boolean; payload?: MixedRuntimeReadiness }> => {
     if (!localBackendRef.current) {
       return { ok: true }
@@ -452,6 +464,12 @@ function HomePageContent() {
 
   const handleUploadError = useCallback((error: UploadError) => {
     debugError("Segment upload failed:", error.code, "-", error.message);
+    if (
+      error.code.toLowerCase() === "blank_audio" ||
+      (error.code === "validation_error" && error.message.toLowerCase().includes("blank_audio"))
+    ) {
+      setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
+    }
   }, []);
 
   const { enqueueSegment, resetQueue } = useSegmentUpload(sessionId, {
@@ -554,6 +572,7 @@ function HomePageContent() {
   useEffect(() => {
     if (recordingError) {
       debugError("Recording error:", recordingError)
+      setTranscriptionErrorMessage("Recording failed. Check microphone permission and selected input device.")
       setTranscriptionStatus("failed")
     }
   }, [recordingError])
@@ -663,7 +682,14 @@ function HomePageContent() {
         const data = JSON.parse(event.data) as { final_transcript?: string }
         const transcript = data.final_transcript || ""
         if (!transcript) return
+        if (isBlankTranscriptText(transcript)) {
+          setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
+          setTranscriptionStatus("failed")
+          setNoteGenerationStatus("pending")
+          return
+        }
         finalTranscriptRef.current = transcript
+        setTranscriptionErrorMessage("")
         setTranscriptionStatus("done")
         setProcessingMetrics((prev) => ({
           ...prev,
@@ -682,12 +708,27 @@ function HomePageContent() {
         debugError("Failed to parse final transcript event", error)
       }
     },
-    [cleanupSession, processEncounterForNoteGeneration], // Minimal stable dependencies
+    [cleanupSession, isBlankTranscriptText, processEncounterForNoteGeneration], // Minimal stable dependencies
   )
 
   const handleStreamError = useCallback((event: MessageEvent | Event) => {
     const readyState = eventSourceRef.current?.readyState
     debugError("Transcription stream error", { event, readyState, apiBaseUrl: apiBaseUrlRef.current })
+    if ("data" in event && typeof event.data === "string" && event.data.length > 0) {
+      try {
+        const parsed = JSON.parse(event.data) as { code?: string; message?: string }
+        const code = (parsed.code || "").toLowerCase()
+        if (code === "blank_audio") {
+          setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
+        } else if (parsed.message) {
+          setTranscriptionErrorMessage(parsed.message)
+        }
+      } catch {
+        setTranscriptionErrorMessage("Transcription stream error. Please retry.")
+      }
+    } else {
+      setTranscriptionErrorMessage("Transcription stream error. Please retry.")
+    }
     setTranscriptionStatus("failed")
     setProcessingMetrics((prev) => ({
       ...prev,
@@ -799,6 +840,7 @@ function HomePageContent() {
       }
       finalTranscriptRef.current = ""
       finalRecordingRef.current = null
+      setTranscriptionErrorMessage("")
       setTranscriptionStatus("pending")
       setNoteGenerationStatus("pending")
       setProcessingMetrics({})
@@ -831,6 +873,7 @@ function HomePageContent() {
       }
     } catch (err) {
       debugError("Failed to start recording:", err)
+      setTranscriptionErrorMessage("Failed to start recording. Check microphone input/device and permissions.")
       setTranscriptionStatus("failed")
       setView({ type: "idle" })
     }
@@ -856,13 +899,20 @@ function HomePageContent() {
           return uploadFinalRecording(activeSessionId, blob, attempt + 1)
         }
         let message = `Final upload failed (${response.status})`
+        let errorCode = ""
         try {
-          const body = (await response.json()) as { error?: { message?: string } }
+          const body = (await response.json()) as { error?: { code?: string; message?: string } }
+          errorCode = body?.error?.code || ""
           if (body?.error?.message) {
             message = body.error.message
           }
         } catch {
           // ignore
+        }
+        if (errorCode.toLowerCase() === "blank_audio") {
+          setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
+        } else {
+          setTranscriptionErrorMessage(message)
         }
         throw new Error(message)
       }
@@ -872,6 +922,7 @@ function HomePageContent() {
         return uploadFinalRecording(activeSessionId, blob, attempt + 1)
       }
       debugError("Failed to upload final recording:", error)
+      setTranscriptionErrorMessage((previous) => previous || "Transcription failed. Please retry.")
       setTranscriptionStatus("failed")
       throw error
     }
@@ -895,6 +946,7 @@ function HomePageContent() {
     if (useLocalBackend && localBackendRef.current) {
       // Local backend processes in sequence (transcription -> note generation).
       // Keep note generation pending until backend emits stage updates.
+      setTranscriptionErrorMessage("")
       setTranscriptionStatus("in-progress")
       setNoteGenerationStatus("pending")
       await localBackendRef.current.invoke("stop-recording-ui")
@@ -905,6 +957,7 @@ function HomePageContent() {
 
     const audioBlob = await stopRecording()
     if (!audioBlob) {
+      setTranscriptionErrorMessage("No recording captured. Check microphone input/device and retry.")
       setTranscriptionStatus("failed")
       return
     }
@@ -916,6 +969,7 @@ function HomePageContent() {
       void uploadFinalRecording(activeSessionId, audioBlob)
     } else {
       debugError("Missing session identifier for final upload")
+      setTranscriptionErrorMessage("Missing session identifier for transcription.")
       setTranscriptionStatus("failed")
     }
   }
@@ -1002,6 +1056,7 @@ function HomePageContent() {
     const blob = finalRecordingRef.current
     const activeSessionId = sessionIdRef.current
     if (!blob || !activeSessionId) return
+    setTranscriptionErrorMessage("")
     setTranscriptionStatus("in-progress")
     try {
       await uploadFinalRecording(activeSessionId, blob)
@@ -1118,11 +1173,19 @@ function HomePageContent() {
       const meeting = data.meetingData
       lastMeetingDataRef.current = meeting ?? null
       const transcript = meeting?.transcript || ""
+      if (isBlankTranscriptText(transcript)) {
+        setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
+        setTranscriptionStatus("failed")
+        setNoteGenerationStatus("pending")
+        await updateEncounterRef.current(encounterId, { status: "transcription_failed" })
+        return
+      }
       const encounter = encountersRef.current.find((e: Encounter) => e.id === encounterId)
       const noteText = buildNoteFromMeeting(meeting, encounter?.visit_reason)
       const durationSeconds = meeting?.session_info?.duration_seconds
 
       finalTranscriptRef.current = transcript
+      setTranscriptionErrorMessage("")
 
       await updateEncounterRef.current(encounterId, {
         status: "completed",
@@ -1149,7 +1212,7 @@ function HomePageContent() {
       backend.removeAllListeners("processing-stage")
       backend.removeAllListeners("processing-complete")
     }
-  }, [buildNoteFromMeeting, duration, useLocalBackend])
+  }, [buildNoteFromMeeting, duration, isBlankTranscriptText, useLocalBackend])
 
   useEffect(() => {
     if (!useLocalBackend || view.type !== "recording") return
@@ -1225,6 +1288,7 @@ function HomePageContent() {
               patientName={currentEncounter?.patient_name || ""}
               transcriptionStatus={transcriptionStatus}
               noteGenerationStatus={noteGenerationStatus}
+              transcriptionErrorMessage={transcriptionErrorMessage}
               onRetryTranscription={handleRetryTranscription}
               onRetryNoteGeneration={handleRetryNoteGeneration}
             />
