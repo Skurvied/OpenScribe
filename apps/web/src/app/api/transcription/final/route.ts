@@ -42,15 +42,18 @@ function isLikelySilentPcm16(buffer: ArrayBuffer): boolean {
 
   let sumSquares = 0
   let peak = 0
+  let nonTrivial = 0
   for (let i = 0; i < sampleCount; i += 1) {
     const raw = view.getInt16(i * 2, true)
     const normalized = raw / 32768
     const abs = Math.abs(normalized)
     if (abs > peak) peak = abs
+    if (abs > 0.001) nonTrivial += 1
     sumSquares += normalized * normalized
   }
   const rms = Math.sqrt(sumSquares / sampleCount)
-  return rms < 0.003 && peak < 0.02
+  const nonTrivialRatio = nonTrivial / sampleCount
+  return rms < 0.001 && peak < 0.005 && nonTrivialRatio < 0.02
 }
 
 function isBlankTranscript(text: string): boolean {
@@ -87,13 +90,9 @@ export async function POST(req: NextRequest) {
     if (wavInfo.sampleRate !== 16000 || wavInfo.numChannels !== 1 || wavInfo.bitDepth !== 16) {
       return jsonError(400, "validation_error", "Final recording must be 16kHz mono 16-bit PCM WAV")
     }
-    if (isLikelySilentPcm16(arrayBuffer)) {
-      return jsonError(
-        422,
-        "blank_audio",
-        "No detectable speech signal in the recording. Check microphone input/device and retry.",
-      )
-    }
+    // Do not fail final transcription based on amplitude alone.
+    // Quiet speech can still produce a valid transcript.
+    const likelySilentAudio = isLikelySilentPcm16(arrayBuffer)
 
     try {
       const resolvedProvider = resolveTranscriptionProvider()
@@ -115,6 +114,12 @@ export async function POST(req: NextRequest) {
           "blank_audio",
           "No detectable speech signal in the recording. Check microphone input/device and retry.",
         )
+      }
+      if (likelySilentAudio) {
+        console.warn("[transcription.final] low-energy capture produced transcript", {
+          sessionId,
+          durationMs: wavInfo.durationMs,
+        })
       }
       transcriptionSessionStore.setFinalTranscript(sessionId, transcript)
 

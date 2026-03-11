@@ -42,15 +42,18 @@ function isLikelySilentPcm16(buffer: ArrayBuffer): boolean {
 
   let sumSquares = 0
   let peak = 0
+  let nonTrivial = 0
   for (let i = 0; i < sampleCount; i += 1) {
     const raw = view.getInt16(i * 2, true)
     const normalized = raw / 32768
     const abs = Math.abs(normalized)
     if (abs > peak) peak = abs
+    if (abs > 0.001) nonTrivial += 1
     sumSquares += normalized * normalized
   }
   const rms = Math.sqrt(sumSquares / sampleCount)
-  return rms < 0.003 && peak < 0.02
+  const nonTrivialRatio = nonTrivial / sampleCount
+  return rms < 0.001 && peak < 0.005 && nonTrivialRatio < 0.02
 }
 
 export async function POST(req: NextRequest) {
