@@ -141,6 +141,9 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "config/macos.entitlements.plist",
+      "entitlementsInherit": "config/macos.entitlements.plist",
       "target": [
         "dmg",
         "zip"
