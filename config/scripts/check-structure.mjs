@@ -13,10 +13,11 @@ const allowedRootDirs = new Set([
   "build",
   "docker",
   "docs",
+  "infra",
   "local-only",
   "models",
-  "recordings",
   "output",
+  "recordings",
   "scripts",
   "node_modules",
 ])
@@ -27,8 +28,8 @@ const allowedRootFiles = new Set([
   "README.md",
   "CONTRIBUTING.md",
   "LICENSE",
-  "architecture.md",
   "requirements.txt",
+  "architecture.md",
   ".gitignore",
   "BUILD_STATUS.md",
   "MONITORING_GUIDE.md",
@@ -48,6 +49,7 @@ const pipelineStages = new Set([
   "assemble",
   "note-core",
   "render",
+  "shared",
   "medgemma-scribe",
   "eval",
 ])
@@ -68,6 +70,9 @@ for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       errors.push(`Unexpected top-level directory: ${name}`)
     }
   } else {
+    if (name.endsWith(".tsbuildinfo")) {
+      continue
+    }
     if (name.startsWith(".env")) {
       continue
     }

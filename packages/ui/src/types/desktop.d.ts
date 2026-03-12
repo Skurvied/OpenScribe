@@ -35,6 +35,11 @@ declare global {
     getPrimaryScreenSource?: () => Promise<DesktopScreenSource | null>
     secureStorage?: SecureStorageAPI
     checkMicrophoneReadiness?: (preferredDeviceId?: string) => Promise<MicrophoneReadinessResult>
+    openscribeBackend?: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      on: (channel: string, listener: (...args: unknown[]) => void) => void
+      removeAllListeners: (channel: string) => void
+    }
   }
 
   interface Window {
