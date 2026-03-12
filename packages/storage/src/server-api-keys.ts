@@ -96,6 +96,47 @@ function getConfigPath(): string {
   return join(process.cwd(), ".api-keys.json")
 }
 
+export type MixedModeAuthSource = "server_file" | "env" | "none"
+
+export function getAnthropicApiKeyStatus(): {
+  hasAnthropicKeyConfigured: boolean
+  source: MixedModeAuthSource
+  anthropicApiKey: string
+} {
+  // First try config file
+  try {
+    const configPath = getConfigPath()
+    const fileContent = readFileSync(configPath, "utf-8")
+    const decrypted = decryptDataSync(fileContent)
+    const config = JSON.parse(decrypted)
+    const key = String(config.anthropicApiKey || "").trim()
+    if (!isPlaceholderKey(key)) {
+      return {
+        hasAnthropicKeyConfigured: true,
+        source: "server_file",
+        anthropicApiKey: key,
+      }
+    }
+  } catch {
+    // Fall through to env
+  }
+
+  const envKey = String(process.env.ANTHROPIC_API_KEY || "").trim()
+  if (!isPlaceholderKey(envKey)) {
+    return {
+      hasAnthropicKeyConfigured: true,
+      source: "env",
+      anthropicApiKey: envKey,
+    }
+  }
+
+  return {
+    hasAnthropicKeyConfigured: false,
+    source: "none",
+    anthropicApiKey: "",
+  }
+}
+
 export function getOpenAIApiKey(): string {
   // First try to load from config file
   try {
@@ -122,26 +163,9 @@ export function getOpenAIApiKey(): string {
 }
 
 export function getAnthropicApiKey(): string {
-  // First try to load from config file
-  try {
-    const configPath = getConfigPath()
-    const fileContent = readFileSync(configPath, "utf-8")
-    
-    // Decrypt if encrypted
-    const decrypted = decryptDataSync(fileContent)
-    const config = JSON.parse(decrypted)
-    
-    if (config.anthropicApiKey && !isPlaceholderKey(config.anthropicApiKey)) {
-      return String(config.anthropicApiKey).trim()
-    }
-  } catch (error) {
-    // Config file doesn't exist or is invalid, fall through to env var
-  }
-
-  // Fallback to environment variable
-  const key = process.env.ANTHROPIC_API_KEY
-  if (isPlaceholderKey(key)) {
+  const status = getAnthropicApiKeyStatus()
+  if (!status.hasAnthropicKeyConfigured) {
     throw new Error("Missing ANTHROPIC_API_KEY. Please configure your API key in Settings.")
   }
-  return String(key).trim()
+  return status.anthropicApiKey
 }

@@ -96,6 +96,16 @@ export type AuditExportFormat = "csv" | "json"
  * Desktop API type declarations for Electron integration
  */
 type MediaAccessStatus = "not-determined" | "granted" | "denied" | "restricted" | "unknown"
+type MicrophoneReadinessResult = {
+  success: boolean
+  code?: string
+  userMessage?: string
+  metrics?: {
+    rms: number
+    peak: number
+  }
+  activeDeviceId?: string
+}
 
 declare global {
   interface DesktopScreenSource {
@@ -108,8 +118,10 @@ declare global {
     versions: NodeJS.ProcessVersions
     requestMediaPermissions?: () => Promise<{ microphoneGranted: boolean; screenStatus: MediaAccessStatus }>
     getMediaAccessStatus?: (mediaType: "microphone" | "camera" | "screen") => Promise<MediaAccessStatus>
+    openMicrophonePermissionSettings?: () => Promise<boolean> | boolean
     openScreenPermissionSettings?: () => Promise<boolean> | boolean
     getPrimaryScreenSource?: () => Promise<DesktopScreenSource | null>
+    checkMicrophoneReadiness?: (preferredDeviceId?: string) => Promise<MicrophoneReadinessResult>
     secureStorage?: {
       isAvailable: () => Promise<boolean>
       encrypt: (plaintext: string) => Promise<string>

@@ -11,6 +11,7 @@ export type ProcessingMode = "mixed" | "local"
 export interface UserPreferences {
   noteLength: NoteLength
   processingMode: ProcessingMode
+  preferredInputDeviceId?: string
 }
 
 const PREFERENCES_KEY = "openscribe_preferences"
@@ -30,6 +31,7 @@ function resolveDefaultProcessingMode(): ProcessingMode {
 const DEFAULT_PREFERENCES: UserPreferences = {
   noteLength: "long",
   processingMode: "mixed",
+  preferredInputDeviceId: "",
 }
 
 export function getPreferences(): UserPreferences {

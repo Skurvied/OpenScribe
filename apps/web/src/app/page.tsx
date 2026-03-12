@@ -11,8 +11,8 @@ import {
   getPreferences,
   setPreferences,
   getApiKeys,
+  getMixedModeAuthStatus,
   setApiKeys,
-  validateApiKey,
   type NoteLength,
   type ProcessingMode,
   debugLog,
@@ -88,6 +88,17 @@ type MixedRuntimeReadiness = {
   details?: unknown
 }
 
+type MicReadinessResult = {
+  success: boolean
+  code?: string
+  userMessage?: string
+  metrics?: {
+    rms: number
+    peak: number
+  }
+  activeDeviceId?: string
+}
+
 function templateForVisitReason(visitReason?: string): "default" | "soap" {
   if (!visitReason) return "default"
   const normalized = visitReason.toLowerCase()
@@ -142,6 +153,13 @@ function HomePageContent() {
   const [localRuntimePromptCode, setLocalRuntimePromptCode] = useState("")
   const [anthropicApiKeyInput, setAnthropicApiKeyInput] = useState("")
   const [hasAnthropicApiKey, setHasAnthropicApiKey] = useState(false)
+  const [mixedAuthStatusLoaded, setMixedAuthStatusLoaded] = useState(false)
+  const [mixedAuthSource, setMixedAuthSource] = useState<"server_file" | "env" | "none">("none")
+  const [preferredInputDeviceId, setPreferredInputDeviceId] = useState("")
+  const [audioInputDevices, setAudioInputDevices] = useState<Array<{ id: string; label: string }>>([])
+  const [micPermissionStatus, setMicPermissionStatus] = useState("unknown")
+  const [lastMicReadiness, setLastMicReadiness] = useState<MicReadinessResult | null>(null)
+  const [lastFailureCode, setLastFailureCode] = useState("")
   const [noteLength, setNoteLengthState] = useState<NoteLength>("long")
   const [processingMode, setProcessingModeState] = useState<ProcessingMode>("mixed")
   const [localBackendAvailable, setLocalBackendAvailable] = useState(false)
@@ -162,6 +180,7 @@ function HomePageContent() {
     const prefs = getPreferences()
     setNoteLengthState(prefs.noteLength)
     setProcessingModeState(prefs.processingMode)
+    setPreferredInputDeviceId(prefs.preferredInputDeviceId || "")
 
     // Initialize audit logging system (cleanup old entries, setup periodic cleanup)
     void initializeAuditLog()
@@ -170,14 +189,21 @@ function HomePageContent() {
   useEffect(() => {
     const loadApiKeys = async () => {
       try {
-        const keys = await getApiKeys()
+        const [keys, mixedAuthStatus] = await Promise.all([getApiKeys(), getMixedModeAuthStatus()])
         const anthropicKey = (keys.anthropicApiKey || "").trim()
         setAnthropicApiKeyInput(anthropicKey)
-        setHasAnthropicApiKey(validateApiKey(anthropicKey, "anthropic"))
+        setHasAnthropicApiKey(mixedAuthStatus.hasAnthropicKeyConfigured)
+        setMixedAuthSource(mixedAuthStatus.source)
+        if (mixedAuthStatus.hasAnthropicKeyConfigured) {
+          setShowMixedKeyPrompt(false)
+        }
       } catch (error) {
         debugWarn("Failed to load API keys", error)
         setAnthropicApiKeyInput("")
         setHasAnthropicApiKey(false)
+        setMixedAuthSource("none")
+      } finally {
+        setMixedAuthStatusLoaded(true)
       }
     }
     void loadApiKeys()
@@ -188,6 +214,29 @@ function HomePageContent() {
     const backend = window.desktop?.openscribeBackend
     localBackendRef.current = backend ?? null
     setLocalBackendAvailable(!!backend)
+  }, [])
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) return
+
+    const refreshAudioDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const inputs = devices
+          .filter((device) => device.kind === "audioinput")
+          .map((device, index) => ({
+            id: device.deviceId,
+            label: device.label || `Microphone ${index + 1}`,
+          }))
+        setAudioInputDevices(inputs)
+      } catch (error) {
+        debugWarn("Failed to enumerate audio input devices", error)
+      }
+    }
+
+    void refreshAudioDevices()
+    navigator.mediaDevices.addEventListener?.("devicechange", refreshAudioDevices)
+    return () => navigator.mediaDevices.removeEventListener?.("devicechange", refreshAudioDevices)
   }, [])
 
   useEffect(() => {
@@ -220,10 +269,8 @@ function HomePageContent() {
   }, [localBackendAvailable, processingMode])
 
   useEffect(() => {
-    if (processingMode === "mixed" && !hasAnthropicApiKey) {
-      setShowMixedKeyPrompt(true)
-    }
-  }, [processingMode, hasAnthropicApiKey])
+    setShowMixedKeyPrompt(mixedAuthStatusLoaded && processingMode === "mixed" && !hasAnthropicApiKey)
+  }, [mixedAuthStatusLoaded, processingMode, hasAnthropicApiKey])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -248,16 +295,26 @@ function HomePageContent() {
 
         debugLog("[Main Page] Checking microphone permission...")
         const micStatus = await desktop.getMediaAccessStatus("microphone")
+        setMicPermissionStatus(micStatus)
         debugLog("[Main Page] Microphone status:", micStatus)
         
         if (micStatus !== "granted") {
           debugLog("[Main Page] Missing microphone permission, showing dialog")
           setShowPermissionsDialog(true)
         } else {
-          debugLog("[Main Page] All permissions granted, warmup only")
-          // Warmup permissions in background
-          void warmupMicrophonePermission()
-          void warmupSystemAudioPermission()
+          const readiness = desktop.checkMicrophoneReadiness
+            ? ((await desktop.checkMicrophoneReadiness(preferredInputDeviceId || "")) as MicReadinessResult)
+            : ({ success: await warmupMicrophonePermission() } as MicReadinessResult)
+          setLastMicReadiness(readiness)
+          const micReady = !!readiness.success
+          if (!micReady) {
+            debugLog("[Main Page] Microphone permission granted but readiness failed")
+            setShowPermissionsDialog(true)
+          } else {
+            debugLog("[Main Page] All permissions granted, warmup only")
+            void warmupMicrophonePermission()
+            void warmupSystemAudioPermission()
+          }
         }
       } catch (error) {
         debugError("[Main Page] Permission check failed:", error)
@@ -267,13 +324,15 @@ function HomePageContent() {
     }
 
     void checkPermissions()
-  }, [])
+  }, [preferredInputDeviceId])
 
   const handlePermissionsComplete = async () => {
-    setShowPermissionsDialog(false)
-    // Warmup permissions after dialog is complete
-    void warmupMicrophonePermission()
-    void warmupSystemAudioPermission()
+    const ready = await runMicReadinessCheck(false)
+    if (ready) {
+      setShowPermissionsDialog(false)
+      void warmupMicrophonePermission()
+      void warmupSystemAudioPermission()
+    }
   }
 
   const handleOpenSettings = () => {
@@ -288,6 +347,65 @@ function HomePageContent() {
     setNoteLengthState(length)
     setPreferences({ noteLength: length })
   }
+
+  const refreshMicPermissionStatus = useCallback(async () => {
+    try {
+      const desktop = window.desktop
+      if (desktop?.getMediaAccessStatus) {
+        const status = await desktop.getMediaAccessStatus("microphone")
+        setMicPermissionStatus(status)
+      } else {
+        setMicPermissionStatus("unknown")
+      }
+    } catch {
+      setMicPermissionStatus("unknown")
+    }
+  }, [])
+
+  const runMicReadinessCheck = useCallback(
+    async (showPromptOnFailure = true): Promise<boolean> => {
+      try {
+        await refreshMicPermissionStatus()
+        const desktop = window.desktop
+        let result: MicReadinessResult
+        if (desktop?.checkMicrophoneReadiness) {
+          result = await desktop.checkMicrophoneReadiness(preferredInputDeviceId || "")
+        } else {
+          const warmed = await warmupMicrophonePermission()
+          result = warmed
+            ? { success: true }
+            : {
+                success: false,
+                code: "MIC_STREAM_UNAVAILABLE",
+                userMessage: "Unable to access microphone. Check permission and selected input device.",
+              }
+        }
+        setLastMicReadiness(result)
+        if (!result.success && showPromptOnFailure) {
+          setLastFailureCode(result.code || "MIC_STREAM_UNAVAILABLE")
+          setTranscriptionErrorMessage(
+            result.userMessage || "Microphone is not ready. Check permission and selected input device.",
+          )
+          setShowPermissionsDialog(true)
+          return false
+        }
+        return !!result.success
+      } catch (error) {
+        if (showPromptOnFailure) {
+          setLastFailureCode("MIC_STREAM_UNAVAILABLE")
+          setTranscriptionErrorMessage("Microphone readiness check failed. Please verify permission and retry.")
+          setShowPermissionsDialog(true)
+        }
+        return false
+      }
+    },
+    [preferredInputDeviceId, refreshMicPermissionStatus],
+  )
+
+  const handlePreferredInputDeviceChange = useCallback((value: string) => {
+    setPreferredInputDeviceId(value)
+    void setPreferences({ preferredInputDeviceId: value })
+  }, [])
 
   const isBlankTranscriptText = useCallback((value: string): boolean => {
     const normalized = value.trim().toLowerCase()
@@ -400,8 +518,10 @@ function HomePageContent() {
   const handleSaveAnthropicApiKey = useCallback(async (value: string) => {
     const trimmed = value.trim()
     await setApiKeys({ anthropicApiKey: trimmed })
-    setHasAnthropicApiKey(validateApiKey(trimmed, "anthropic"))
-    if (validateApiKey(trimmed, "anthropic")) {
+    const status = await getMixedModeAuthStatus()
+    setHasAnthropicApiKey(status.hasAnthropicKeyConfigured)
+    setMixedAuthSource(status.source)
+    if (status.hasAnthropicKeyConfigured) {
       setShowMixedKeyPrompt(false)
     }
   }, [])
@@ -468,6 +588,7 @@ function HomePageContent() {
       error.code.toLowerCase() === "blank_audio" ||
       (error.code === "validation_error" && error.message.toLowerCase().includes("blank_audio"))
     ) {
+      setLastFailureCode("TRANSCRIPTION_BLANK_AUDIO")
       setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
     }
   }, []);
@@ -567,15 +688,17 @@ function HomePageContent() {
     onSegmentReady: handleSegmentReady,
     segmentDurationMs: SEGMENT_DURATION_MS,
     overlapMs: OVERLAP_MS,
+    preferredInputDeviceId,
   })
 
   useEffect(() => {
     if (recordingError) {
       debugError("Recording error:", recordingError)
+      setLastFailureCode(micPermissionStatus === "denied" ? "MIC_PERMISSION_DENIED" : "MIC_STREAM_UNAVAILABLE")
       setTranscriptionErrorMessage("Recording failed. Check microphone permission and selected input device.")
       setTranscriptionStatus("failed")
     }
-  }, [recordingError])
+  }, [micPermissionStatus, recordingError])
 
   // Stable ref for updateEncounter to avoid EventSource recreation
   const updateEncounterRef = useRef(updateEncounter)
@@ -835,6 +958,10 @@ function HomePageContent() {
           return
         }
       }
+      const micReady = await runMicReadinessCheck(true)
+      if (!micReady) {
+        return
+      }
       if (!useLocalBackend) {
         cleanupSession()
       }
@@ -873,6 +1000,12 @@ function HomePageContent() {
       }
     } catch (err) {
       debugError("Failed to start recording:", err)
+      const message = err instanceof Error ? err.message.toLowerCase() : ""
+      if (message.includes("denied") || message.includes("permission")) {
+        setLastFailureCode("MIC_PERMISSION_DENIED")
+      } else {
+        setLastFailureCode("MIC_STREAM_UNAVAILABLE")
+      }
       setTranscriptionErrorMessage("Failed to start recording. Check microphone input/device and permissions.")
       setTranscriptionStatus("failed")
       setView({ type: "idle" })
@@ -910,6 +1043,7 @@ function HomePageContent() {
           // ignore
         }
         if (errorCode.toLowerCase() === "blank_audio") {
+          setLastFailureCode("TRANSCRIPTION_BLANK_AUDIO")
           setTranscriptionErrorMessage("No speech signal detected. Check microphone input/device and retry.")
         } else {
           setTranscriptionErrorMessage(message)
@@ -1321,7 +1455,9 @@ function HomePageContent() {
         onComplete={handleCompleteSetup}
         onSkip={() => setShowLocalSetupWizard(false)}
       />
-      {showPermissionsDialog && <PermissionsDialog onComplete={handlePermissionsComplete} />}
+      {showPermissionsDialog && (
+        <PermissionsDialog onComplete={handlePermissionsComplete} preferredInputDeviceId={preferredInputDeviceId} />
+      )}
       <SettingsDialog
         isOpen={showSettingsDialog}
         onClose={handleCloseSettings}
@@ -1333,6 +1469,17 @@ function HomePageContent() {
         anthropicApiKey={anthropicApiKeyInput}
         onAnthropicApiKeyChange={setAnthropicApiKeyInput}
         onSaveAnthropicApiKey={handleSaveAnthropicApiKey}
+        audioInputDevices={audioInputDevices}
+        preferredInputDeviceId={preferredInputDeviceId}
+        onPreferredInputDeviceChange={handlePreferredInputDeviceChange}
+        micPermissionStatus={micPermissionStatus}
+        mixedAuthSource={mixedAuthSource}
+        lastMicReadinessMessage={lastMicReadiness?.userMessage || (lastMicReadiness?.success ? "Ready" : "")}
+        lastMicReadinessMetrics={lastMicReadiness?.metrics || null}
+        lastFailureCode={lastFailureCode}
+        onRunMicrophoneCheck={async () => {
+          await runMicReadinessCheck(true)
+        }}
       />
       {showMixedKeyPrompt && processingMode === "mixed" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">

@@ -19,6 +19,15 @@ interface SettingsDialogProps {
   anthropicApiKey: string
   onAnthropicApiKeyChange: (value: string) => void
   onSaveAnthropicApiKey: (value: string) => Promise<void>
+  audioInputDevices: Array<{ id: string; label: string }>
+  preferredInputDeviceId?: string
+  onPreferredInputDeviceChange: (value: string) => void
+  micPermissionStatus?: string
+  mixedAuthSource?: "server_file" | "env" | "none"
+  lastMicReadinessMessage?: string
+  lastMicReadinessMetrics?: { rms: number; peak: number } | null
+  lastFailureCode?: string
+  onRunMicrophoneCheck: () => Promise<void>
 }
 
 export function SettingsDialog({
@@ -32,6 +41,15 @@ export function SettingsDialog({
   anthropicApiKey,
   onAnthropicApiKeyChange,
   onSaveAnthropicApiKey,
+  audioInputDevices,
+  preferredInputDeviceId,
+  onPreferredInputDeviceChange,
+  micPermissionStatus,
+  mixedAuthSource,
+  lastMicReadinessMessage,
+  lastMicReadinessMetrics,
+  lastFailureCode,
+  onRunMicrophoneCheck,
 }: SettingsDialogProps) {
   const [isSaving, setIsSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState("")
@@ -216,6 +234,53 @@ export function SettingsDialog({
                 spellCheck={false}
               />
             </div>
+            <p className="text-xs text-muted-foreground">
+              Mixed auth source: {mixedAuthSource || "none"}
+            </p>
+          </div>
+
+          {/* Divider */}
+          <div className="border-t border-border" />
+
+          {/* Audio Input */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium text-foreground">Audio Input</Label>
+            <p className="text-sm text-muted-foreground">
+              Pick the microphone used for encounter capture and run a readiness check.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="preferred-input-device" className="text-sm font-medium text-foreground">
+                Microphone Device
+              </Label>
+              <select
+                id="preferred-input-device"
+                value={preferredInputDeviceId || ""}
+                onChange={(e) => onPreferredInputDeviceChange(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">System default microphone</option>
+                {audioInputDevices.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => void onRunMicrophoneCheck()}>
+                Run Microphone Check
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">OS permission status: {micPermissionStatus || "unknown"}</p>
+            {lastMicReadinessMessage && (
+              <p className="text-xs text-muted-foreground">Last mic check: {lastMicReadinessMessage}</p>
+            )}
+            {lastMicReadinessMetrics && (
+              <p className="text-xs text-muted-foreground">
+                Last levels: RMS {lastMicReadinessMetrics.rms.toFixed(4)}, Peak {lastMicReadinessMetrics.peak.toFixed(4)}
+              </p>
+            )}
+            {lastFailureCode && <p className="text-xs text-muted-foreground">Last failure code: {lastFailureCode}</p>}
           </div>
 
           {/* Divider */}

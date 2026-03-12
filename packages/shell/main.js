@@ -48,6 +48,15 @@ const createMainWindow = async () => {
     return { action: 'deny' };
   });
 
+  // Allow explicit media permission requests from the renderer.
+  window.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === 'media' || permission === 'display-capture') {
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
+
   try {
     if (isDev) {
       await window.loadURL(DEV_SERVER_URL);
@@ -298,6 +307,15 @@ function registerPermissionHandlers() {
     const settingsUrl = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
     shell.openExternal(settingsUrl).catch((error) => {
       console.error('Failed to open screen permissions panel', error);
+    });
+    return true;
+  });
+
+  ipcMain.handle('media-permissions:open-microphone-settings', () => {
+    if (!isMac) return false;
+    const settingsUrl = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone';
+    shell.openExternal(settingsUrl).catch((error) => {
+      console.error('Failed to open microphone permissions panel', error);
     });
     return true;
   });

@@ -6,11 +6,13 @@ import { Button } from "@ui/lib/ui/button"
 
 interface PermissionsDialogProps {
   onComplete: () => void
+  preferredInputDeviceId?: string
 }
 
-export function PermissionsDialog({ onComplete }: PermissionsDialogProps) {
+export function PermissionsDialog({ onComplete, preferredInputDeviceId }: PermissionsDialogProps) {
   const [microphoneGranted, setMicrophoneGranted] = useState(false)
   const [screenGranted, setScreenGranted] = useState(false)
+  const [microphoneStatusMessage, setMicrophoneStatusMessage] = useState("")
   const [initialCheckDone, setInitialCheckDone] = useState(false)
 
   useEffect(() => {
@@ -18,6 +20,7 @@ export function PermissionsDialog({ onComplete }: PermissionsDialogProps) {
       try {
         let micGranted = false
         let screenGranted = false
+        let micMessage = ""
         
         const desktop = window.desktop
         console.log("Desktop object available:", !!desktop)
@@ -37,35 +40,25 @@ export function PermissionsDialog({ onComplete }: PermissionsDialogProps) {
             console.log("System audio available:", systemAudioAvailable, "Source:", screenSource)
             
             console.log("Desktop permissions:", { microphone: micStatus, systemAudio: systemAudioAvailable })
-            micGranted = micStatus === "granted"
             screenGranted = systemAudioAvailable
+            if (desktop.checkMicrophoneReadiness) {
+              const readiness = await desktop.checkMicrophoneReadiness(preferredInputDeviceId || "")
+              micGranted = !!readiness?.success
+              micMessage = readiness?.userMessage || ""
+            } else {
+              micGranted = micStatus === "granted"
+            }
           } catch (error) {
             console.error("Desktop API permission check failed:", error)
           }
         } else {
           console.log("Desktop API not available, window.desktop:", window.desktop)
         }
-        
-        // Always check browser permissions as fallback for microphone
-        if (!micGranted) {
-          try {
-            const devices = await navigator.mediaDevices.enumerateDevices()
-            const hasAudioInput = devices.some((device) => device.kind === "audioinput")
-            if (hasAudioInput) {
-              // Try to get actual permission status
-              const result = await navigator.permissions.query({ name: "microphone" as PermissionName })
-              console.log("Browser microphone permission:", result.state)
-              micGranted = result.state === "granted"
-            }
-          } catch (err) {
-            // Permissions API not available, will need user interaction
-            console.log("Browser permissions API not available:", err)
-          }
-        }
-        
+
         console.log("Final permission states:", { microphone: micGranted, screen: screenGranted })
         setMicrophoneGranted(micGranted)
         setScreenGranted(screenGranted)
+        setMicrophoneStatusMessage(micMessage)
         setInitialCheckDone(true)
       } catch (error) {
         console.error("Failed to check permissions", error)
@@ -87,7 +80,7 @@ export function PermissionsDialog({ onComplete }: PermissionsDialogProps) {
       clearTimeout(initialTimeout)
       clearInterval(intervalId)
     }
-  }, [])
+  }, [preferredInputDeviceId])
 
   const handleEnableMicrophone = async () => {
     try {
@@ -95,20 +88,27 @@ export function PermissionsDialog({ onComplete }: PermissionsDialogProps) {
       const desktop = window.desktop
       if (desktop?.requestMediaPermissions) {
         const result = await desktop.requestMediaPermissions()
-        if (result.microphoneGranted) {
-          setMicrophoneGranted(true)
-          return
+        if (result.microphoneGranted && desktop.checkMicrophoneReadiness) {
+          const readiness = await desktop.checkMicrophoneReadiness(preferredInputDeviceId || "")
+          setMicrophoneGranted(!!readiness?.success)
+          setMicrophoneStatusMessage(readiness?.userMessage || "")
+          if (readiness?.success) return
         }
       }
       
       // If that doesn't work, try browser permissions
       try {
-        await navigator.mediaDevices.getUserMedia({ audio: true })
-        setMicrophoneGranted(true)
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: preferredInputDeviceId ? { deviceId: { exact: preferredInputDeviceId } } : true,
+        })
+        stream.getTracks().forEach((track) => track.stop())
+        const readiness = await desktop?.checkMicrophoneReadiness?.(preferredInputDeviceId || "")
+        setMicrophoneGranted(!!readiness?.success)
+        setMicrophoneStatusMessage(readiness?.userMessage || "")
       } catch {
-        // If browser permission fails, open system settings
-        if (window.desktop?.openScreenPermissionSettings) {
-          await window.desktop.openScreenPermissionSettings()
+        // If browser permission fails, open microphone settings
+        if (window.desktop?.openMicrophonePermissionSettings) {
+          await window.desktop.openMicrophonePermissionSettings()
         }
       }
     } catch (error) {
@@ -168,16 +168,29 @@ export function PermissionsDialog({ onComplete }: PermissionsDialogProps) {
                 <Check className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
               </div>
             ) : (
-              <Button
-                onClick={handleEnableMicrophone}
-                className="rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
-                size="sm"
-              >
-                <Mic className="mr-2 h-4 w-4" />
-                Enable microphone
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={handleEnableMicrophone}
+                  className="rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                  size="sm"
+                >
+                  <Mic className="mr-2 h-4 w-4" />
+                  Enable microphone
+                </Button>
+                <Button
+                  onClick={() => window.desktop?.openMicrophonePermissionSettings?.()}
+                  className="rounded-full"
+                  size="sm"
+                  variant="outline"
+                >
+                  Open Mic Settings
+                </Button>
+              </div>
             )}
           </div>
+          {!microphoneGranted && microphoneStatusMessage && (
+            <p className="px-3 text-xs text-muted-foreground">{microphoneStatusMessage}</p>
+          )}
 
           {/* Screen Recording Permission */}
           <div className="flex items-center justify-between rounded-lg p-3 transition-colors hover:bg-accent/50">
