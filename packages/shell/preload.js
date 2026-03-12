@@ -32,19 +32,29 @@ async function sampleMicSignal(preferredDeviceId) {
     };
   }
 
-  const audioConstraints = {
-    echoCancellation: true,
-    noiseSuppression: true,
-    channelCount: 1,
-  };
-  if (preferredDeviceId) {
-    audioConstraints.deviceId = { exact: preferredDeviceId };
-  }
-
   let stream;
   let audioContext;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    const makeConstraints = (deviceId) => {
+      const constraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        channelCount: 1,
+      };
+      if (deviceId) constraints.deviceId = { exact: deviceId };
+      return constraints;
+    };
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: makeConstraints(preferredDeviceId) });
+    } catch (firstError) {
+      const name = firstError && typeof firstError === 'object' ? firstError.name : '';
+      if ((name === 'NotFoundError' || name === 'OverconstrainedError') && preferredDeviceId) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: makeConstraints('') });
+      } else {
+        throw firstError;
+      }
+    }
   } catch (error) {
     return mapMicError(error);
   }

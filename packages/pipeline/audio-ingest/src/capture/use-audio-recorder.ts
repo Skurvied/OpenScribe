@@ -175,14 +175,28 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}): UseAudi
       allSamplesRef.current = []
       seqRef.current = 0
 
-      const microphoneStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          channelCount: 1,
-          ...(preferredInputDeviceId ? { deviceId: { exact: preferredInputDeviceId } } : {}),
-        },
+      const buildAudioConstraints = (deviceId?: string) => ({
+        echoCancellation: true,
+        noiseSuppression: true,
+        channelCount: 1,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       })
+
+      let microphoneStream: MediaStream
+      try {
+        microphoneStream = await navigator.mediaDevices.getUserMedia({
+          audio: buildAudioConstraints(preferredInputDeviceId),
+        })
+      } catch (error) {
+        const errorName = error instanceof Error ? error.name : ""
+        if ((errorName === "NotFoundError" || errorName === "OverconstrainedError") && preferredInputDeviceId) {
+          microphoneStream = await navigator.mediaDevices.getUserMedia({
+            audio: buildAudioConstraints(""),
+          })
+        } else {
+          throw error
+        }
+      }
 
       micStreamRef.current = microphoneStream
       const activeTrack = microphoneStream.getAudioTracks()[0]

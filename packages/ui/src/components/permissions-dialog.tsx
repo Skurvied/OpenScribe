@@ -98,9 +98,19 @@ export function PermissionsDialog({ onComplete, preferredInputDeviceId }: Permis
       
       // If that doesn't work, try browser permissions
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: preferredInputDeviceId ? { deviceId: { exact: preferredInputDeviceId } } : true,
-        })
+        let stream: MediaStream
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: preferredInputDeviceId ? { deviceId: { exact: preferredInputDeviceId } } : true,
+          })
+        } catch (firstError) {
+          const errorName = firstError instanceof Error ? firstError.name : ""
+          if ((errorName === "NotFoundError" || errorName === "OverconstrainedError") && preferredInputDeviceId) {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          } else {
+            throw firstError
+          }
+        }
         stream.getTracks().forEach((track) => track.stop())
         const readiness = await desktop?.checkMicrophoneReadiness?.(preferredInputDeviceId || "")
         setMicrophoneGranted(!!readiness?.success)
