@@ -30,6 +30,8 @@ OpenScribe is a free MIT license open source AI Medical Scribe that helps clinic
 - [Demo](https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28)
 - [Architecture](./architecture.md)
 - [Contributing](./CONTRIBUTING.md)
+- [Download and Use Desktop](./docs/DOWNLOAD_AND_USE.md)
+- [Desktop Release Runbook](./docs/RELEASE_RUNBOOK.md)
 
 
 The current project is not yet HIPAA compliant; however, we recently signed up with Delve and will be HIPAA compliant in the next few weeks.
@@ -39,6 +41,16 @@ The current project is not yet HIPAA compliant; however, we recently signed up w
 [Demo](https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28)
 
 [![Watch Demo](.github/demo.gif)](https://www.loom.com/share/1ccd4eec00eb4ddab700d32734f33c28)
+
+## Download Desktop App (No Dev Setup)
+
+If you only want to try OpenScribe as an app:
+
+1. Open [latest releases](https://github.com/sammargolis/OpenScribe/releases/latest).
+2. Download the installer for your OS/arch.
+3. Run installer and complete first-run setup wizard.
+
+Full guide: [docs/DOWNLOAD_AND_USE.md](./docs/DOWNLOAD_AND_USE.md)
 
 
 ## Quick Start (5 minutes)
@@ -89,6 +101,25 @@ Optional desktop app path:
 ```bash
 pnpm electron:dev
 ```
+
+Desktop production builds:
+
+```bash
+pnpm build:desktop:mac
+pnpm build:desktop:win
+pnpm build:desktop:linux
+# or
+pnpm build:desktop:all
+```
+
+GA support target for packaged desktop releases:
+- macOS (mainstream current) `x64`, `arm64`
+- Windows (mainstream current) `x64`
+- Linux (mainstream current desktop distros) `x64`, `arm64`
+- Recommended minimum: 8GB RAM, 20GB free disk
+
+See release gate details in [docs/RELEASE_READINESS_CHECKLIST.md](./docs/RELEASE_READINESS_CHECKLIST.md).
+Manual reviewer sign-off template: [docs/MANUAL_SIGNOFF_TEMPLATE.md](./docs/MANUAL_SIGNOFF_TEMPLATE.md).
 
 ## Quick Start (Docker)
 
@@ -146,6 +177,7 @@ OpenScribe supports three workflows. **Mixed web mode is the default path.**
 - Transcription: local Whisper backend in `local-only/openscribe-backend`
 - Notes: local Ollama models (`llama3.2:*`, `gemma3:4b`)
 - No cloud inference in this path
+- First-run desktop setup wizard guides Whisper/model downloads
 - [Setup guide](./local-only/README.md)
 
 ### Cloud/OpenAI + Claude (fallback)

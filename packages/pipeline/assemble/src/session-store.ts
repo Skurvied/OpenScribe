@@ -63,6 +63,7 @@ class TranscriptionSessionStore {
   constructor() {
     // Run cleanup every 5 minutes
     this.cleanupInterval = setInterval(() => this.cleanupOldSessions(), 5 * 60 * 1000)
+    // Do not keep test/CLI processes alive just for periodic cleanup.
     if (this.cleanupInterval?.unref) this.cleanupInterval.unref()
   }
 
@@ -193,7 +194,7 @@ class TranscriptionSessionStore {
     session.finalTranscript = transcript
     session.status = "completed"
     this.sessionTimestamps.set(sessionId, Date.now()) // Update timestamp on completion
-    console.log(`[SessionStore] Session ${sessionId} completed with ${transcript.length} chars`)
+    console.log(`[SessionStore] Session ${sessionId} marked complete`)
     this.emit(session, {
       event: "final",
       data: {

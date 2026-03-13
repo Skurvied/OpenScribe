@@ -4,6 +4,8 @@ const { spawn, exec, execFile } = require('child_process');
 const fs = require('fs');
 const https = require('https');
 const os = require('os');
+const { compareVersions, getDownloadUrl, getDownloadUrlFor } = require('./update-utils');
+const IPC_VERSION = '2026-03-10';
 let PostHog;
 try {
   ({ PostHog } = require('posthog-node'));
@@ -54,6 +56,48 @@ function resolveBackendCommand(args = []) {
   }
 
   return { command: backendPath, args, cwd: backendCwd, mode: 'missing' };
+}
+
+function getBackendDataDir() {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'openscribe-backend');
+  }
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'openscribe-backend');
+  }
+  const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(xdgData, 'openscribe-backend');
+}
+
+function ok(payload = {}) {
+  return { success: true, ipcVersion: IPC_VERSION, ...payload };
+}
+
+function fail(errorCode, message, details) {
+  return {
+    success: false,
+    ipcVersion: IPC_VERSION,
+    errorCode,
+    error: message,
+    ...(details ? { details } : {}),
+  };
+}
+
+function parseLastJsonObject(output) {
+  const lines = String(output || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      return JSON.parse(lines[i]);
+    } catch (error) {
+      // Continue scanning backwards for a JSON payload line.
+    }
+  }
+  try {
+    return JSON.parse(String(output || '').trim());
+  } catch (error) {
+    return null;
+  }
 }
 
 // Telemetry state
@@ -173,9 +217,7 @@ function registerGlobalHotkey(mainWindow) {
   const hotkey = process.platform === 'darwin' ? 'Command+Shift+R' : 'Ctrl+Shift+R';
   const registered = globalShortcut.register(hotkey, () => {
     console.log('Global hotkey triggered: toggle recording');
-    if (mainWindow) {
-      mainWindow.webContents.send('toggle-recording-hotkey');
-    }
+    sendToRenderer(mainWindow, 'toggle-recording-hotkey');
   });
 
   if (registered) {
@@ -251,8 +293,23 @@ function runPythonScript(mainWindow, script, args = [], silent = false) {
 }
 
 function sendDebugLog(mainWindow, message) {
-  if (mainWindow) {
-    mainWindow.webContents.send('debug-log', message);
+  sendToRenderer(mainWindow, 'debug-log', message);
+}
+
+function sendToRenderer(mainWindow, channel, ...payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  const contents = mainWindow.webContents;
+  if (!contents || contents.isDestroyed()) {
+    return false;
+  }
+  try {
+    contents.send(channel, ...payload);
+    return true;
+  } catch (error) {
+    console.warn(`Skipping renderer send for channel "${channel}":`, error.message);
+    return false;
   }
 }
 
@@ -357,6 +414,15 @@ async function ensureWhisperService(mainWindow) {
   return { success: false, error: `Whisper service failed health check on ${WHISPER_LOCAL_HOST}:${WHISPER_LOCAL_PORT}` };
 }
 
+async function ensureWhisperModelReady(mainWindow) {
+  try {
+    await runPythonScript(mainWindow, 'simple_recorder.py', ['download-whisper-model'], true);
+    return { success: true, model: process.env.WHISPER_LOCAL_MODEL || 'tiny.en' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 function stopWhisperService() {
   if (whisperServiceProcess && !whisperServiceProcess.killed) {
     whisperServiceProcess.kill('SIGTERM');
@@ -392,7 +458,7 @@ async function processNextInQueue(mainWindow) {
           (m) => m.session_info?.name === currentProcessingJob.sessionName
         );
 
-        mainWindow.webContents.send('processing-complete', {
+        sendToRenderer(mainWindow, 'processing-complete', {
           success: true,
           sessionName: currentProcessingJob.sessionName,
           message: 'Processing completed successfully',
@@ -400,7 +466,7 @@ async function processNextInQueue(mainWindow) {
         });
       } catch (error) {
         console.error('Error getting processed meeting data:', error);
-        mainWindow.webContents.send('processing-complete', {
+        sendToRenderer(mainWindow, 'processing-complete', {
           success: true,
           sessionName: currentProcessingJob.sessionName,
           message: 'Processing completed successfully',
@@ -412,7 +478,7 @@ async function processNextInQueue(mainWindow) {
     trackEvent('error_occurred', { error_type: 'processing_queue' });
 
     if (mainWindow) {
-      mainWindow.webContents.send('processing-complete', {
+      sendToRenderer(mainWindow, 'processing-complete', {
         success: false,
         sessionName: currentProcessingJob.sessionName,
         error: error.message,
@@ -817,10 +883,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const projectRoot = path.join(__dirname, '..');
 
-      const allowedBaseDirs = [
-        projectRoot,
-        path.join(os.homedir(), 'Library', 'Application Support', 'openscribe-backend'),
-      ];
+      const allowedBaseDirs = [projectRoot, getBackendDataDir(), app.getPath('userData')];
 
       const absolutePath = path.isAbsolute(summaryFilePath)
         ? summaryFilePath
@@ -828,11 +891,11 @@ function registerOpenScribeIpcHandlers(mainWindow) {
 
       if (!validateSafeFilePath(absolutePath, allowedBaseDirs)) {
         console.error(`Security: Blocked attempt to update file outside allowed directories: ${absolutePath}`);
-        return { success: false, error: 'Invalid file path' };
+        return fail('INVALID_PATH', 'Invalid file path');
       }
 
       if (!fs.existsSync(absolutePath)) {
-        return { success: false, error: 'Meeting file not found' };
+        return fail('NOT_FOUND', 'Meeting file not found');
       }
 
       const data = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
@@ -847,10 +910,10 @@ function registerOpenScribeIpcHandlers(mainWindow) {
 
       fs.writeFileSync(absolutePath, JSON.stringify(data, null, 2), 'utf8');
 
-      return { success: true, message: 'Meeting updated successfully', updatedData: data };
+      return ok({ message: 'Meeting updated successfully', updatedData: data });
     } catch (error) {
       console.error('Update meeting error:', error);
-      return { success: false, error: error.message };
+      return fail('UPDATE_FAILED', error.message);
     }
   });
 
@@ -858,10 +921,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const meeting = meetingData;
       const projectRoot = path.join(__dirname, '..');
-      const allowedBaseDirs = [
-        projectRoot,
-        path.join(os.homedir(), 'Library', 'Application Support', 'openscribe-backend'),
-      ];
+      const allowedBaseDirs = [projectRoot, getBackendDataDir(), app.getPath('userData')];
 
       const summaryFile = meeting.session_info?.summary_file;
       const transcriptFile = meeting.session_info?.transcript_file;
@@ -897,13 +957,13 @@ function registerOpenScribeIpcHandlers(mainWindow) {
       }
 
       if (validationErrors > 0) {
-        return { success: false, error: `Blocked ${validationErrors} file deletion(s) due to security validation` };
+        return fail('INVALID_PATH', `Blocked ${validationErrors} file deletion(s) due to security validation`);
       }
 
-      return { success: true, message: `Deleted meeting and ${deletedCount} associated files` };
+      return ok({ message: `Deleted meeting and ${deletedCount} associated files` });
     } catch (error) {
       console.error('Delete meeting error:', error);
-      return { success: false, error: error.message };
+      return fail('DELETE_FAILED', error.message);
     }
   });
 
@@ -986,7 +1046,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             if (transcriptionDone) {
               const durationMs = Math.round(parseFloat(transcriptionDone[1]) * 1000);
               const endedAtMs = Date.now();
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'transcription',
                 status: 'done',
                 endedAtMs,
@@ -999,7 +1059,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             if (noteDone) {
               const durationMs = Math.round(parseFloat(noteDone[1]) * 1000);
               const endedAtMs = Date.now();
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'note_generation',
                 status: 'done',
                 endedAtMs,
@@ -1009,13 +1069,13 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             }
 
             if (trimmed.startsWith('📝 Transcribing:')) {
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'transcription',
                 status: 'in-progress',
                 startedAtMs: Date.now(),
               });
             } else if (trimmed.startsWith('🧠 Generating summary')) {
-              mainWindow.webContents.send('processing-stage', {
+              sendToRenderer(mainWindow, 'processing-stage', {
                 stage: 'note_generation',
                 status: 'in-progress',
                 startedAtMs: Date.now(),
@@ -1033,7 +1093,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
                   (m) => m.session_info?.name === actualSessionName
                 );
 
-                mainWindow.webContents.send('processing-complete', {
+                sendToRenderer(mainWindow, 'processing-complete', {
                   success: true,
                   sessionName: actualSessionName,
                   message: 'Recording and processing completed successfully',
@@ -1042,7 +1102,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
                 processingCompleteSent = true;
               })
               .catch(() => {
-                mainWindow.webContents.send('processing-complete', {
+                sendToRenderer(mainWindow, 'processing-complete', {
                   success: true,
                   sessionName: actualSessionName,
                   message: 'Recording and processing completed successfully',
@@ -1074,7 +1134,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           const message = lastBackendError.includes('summarizer_unavailable')
             ? 'Summarizer unavailable. Install/start Ollama and pull a model (e.g. `ollama pull llama3.2:3b`).'
             : (lastBackendError || `Recording backend failed with exit code ${code}`);
-          mainWindow.webContents.send('processing-complete', {
+          sendToRenderer(mainWindow, 'processing-complete', {
             success: false,
             sessionName: actualSessionName,
             error: message,
@@ -1178,176 +1238,39 @@ function registerOpenScribeIpcHandlers(mainWindow) {
         }
       });
 
-      return { success: true, allGood, checks };
+      return ok({ allGood, checks });
     } catch (error) {
-      return { success: false, error: error.message };
+      return fail('SETUP_CHECK_FAILED', error.message);
     }
   });
 
-  ipcMain.handle('setup-ollama-and-model', async () => {
+  ipcMain.handle('setup-ollama-and-model', async (_event, requestedModel) => {
     try {
-      sendDebugLog(mainWindow, '$ Checking for existing Ollama installation...');
-      sendDebugLog(mainWindow, '$ which ollama || /opt/homebrew/bin/ollama --version || /usr/local/bin/ollama --version');
-
-      const ollamaPath = await new Promise((resolve) => {
-        exec('which ollama', { timeout: 5000 }, (error, stdout) => {
-          if (!error && stdout.trim()) {
-            const foundPath = stdout.trim();
-            sendDebugLog(mainWindow, `Found Ollama at: ${foundPath}`);
-            resolve(foundPath);
-          } else {
-            exec('/opt/homebrew/bin/ollama --version', { timeout: 5000 }, (error2) => {
-              if (!error2) {
-                sendDebugLog(mainWindow, 'Found Ollama at: /opt/homebrew/bin/ollama');
-                resolve('/opt/homebrew/bin/ollama');
-              } else {
-                exec('/usr/local/bin/ollama --version', { timeout: 5000 }, (error3) => {
-                  if (!error3) {
-                    sendDebugLog(mainWindow, 'Found Ollama at: /usr/local/bin/ollama');
-                    resolve('/usr/local/bin/ollama');
-                  } else {
-                    sendDebugLog(mainWindow, 'Ollama not found in any common locations');
-                    resolve(null);
-                  }
-                });
-              }
-            });
-          }
-        });
-      });
-
-      if (!ollamaPath) {
-        sendDebugLog(mainWindow, 'Ollama not found, checking for Homebrew...');
-        sendDebugLog(mainWindow, '$ which brew || /opt/homebrew/bin/brew --version || /usr/local/bin/brew --version');
-
-        const brewPath = await new Promise((resolve) => {
-          exec('which brew', { timeout: 5000 }, (error, stdout) => {
-            if (!error && stdout.trim()) {
-              const foundPath = stdout.trim();
-              sendDebugLog(mainWindow, `Found Homebrew at: ${foundPath}`);
-              resolve(foundPath);
-            } else {
-              exec('/opt/homebrew/bin/brew --version', { timeout: 5000 }, (error2) => {
-                if (!error2) {
-                  sendDebugLog(mainWindow, 'Found Homebrew at: /opt/homebrew/bin/brew');
-                  resolve('/opt/homebrew/bin/brew');
-                } else {
-                  exec('/usr/local/bin/brew --version', { timeout: 5000 }, (error3) => {
-                    if (!error3) {
-                      sendDebugLog(mainWindow, 'Found Homebrew at: /usr/local/bin/brew');
-                      resolve('/usr/local/bin/brew');
-                    } else {
-                      sendDebugLog(mainWindow, 'Homebrew not found in any common locations');
-                      resolve(null);
-                    }
-                  });
-                }
-              });
-            }
-          });
-        });
-
-        if (!brewPath) {
-          sendDebugLog(mainWindow, 'Homebrew not found, installing...');
-          sendDebugLog(mainWindow, '$ /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"');
-          await new Promise((resolve, reject) => {
-            const process = exec('/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"', {
-              timeout: 600000,
-            });
-
-            process.stdout.on('data', (data) => {
-              sendDebugLog(mainWindow, data.toString().trim());
-            });
-
-            process.stderr.on('data', (data) => {
-              sendDebugLog(mainWindow, 'STDERR: ' + data.toString().trim());
-            });
-
-            process.on('close', (code) => {
-              if (code === 0) {
-                sendDebugLog(mainWindow, 'Homebrew installation completed successfully');
-                resolve();
-              } else {
-                sendDebugLog(mainWindow, `Homebrew installation failed with exit code: ${code}`);
-                reject(new Error('Failed to install Homebrew automatically'));
-              }
-            });
-          });
-        } else {
-          sendDebugLog(mainWindow, 'Homebrew found, proceeding with Ollama installation...');
-        }
-
-        const finalBrewPath = brewPath || '/opt/homebrew/bin/brew';
-
-        sendDebugLog(mainWindow, `$ ${finalBrewPath} install ollama`);
-        await new Promise((resolve, reject) => {
-          const process = exec(`${finalBrewPath} install ollama`, { timeout: 300000 });
-
-          process.stdout.on('data', (data) => {
-            sendDebugLog(mainWindow, data.toString().trim());
-          });
-
-          process.stderr.on('data', (data) => {
-            sendDebugLog(mainWindow, 'STDERR: ' + data.toString().trim());
-          });
-
-          process.on('close', (code) => {
-            if (code === 0) {
-              sendDebugLog(mainWindow, 'Ollama installation completed successfully');
-              resolve();
-            } else {
-              sendDebugLog(mainWindow, `Ollama installation failed with exit code: ${code}`);
-              reject(new Error('Failed to install Ollama via Homebrew'));
-            }
-          });
-        });
-      } else {
-        sendDebugLog(mainWindow, 'Ollama already installed, skipping installation step');
+      const selectedModel = typeof requestedModel === 'string' && requestedModel.trim()
+        ? requestedModel.trim()
+        : 'llama3.2:1b';
+      const modelList = await runPythonScript(mainWindow, 'simple_recorder.py', ['list-models'], true);
+      const parsedModelList = JSON.parse(modelList);
+      const supportedModels = parsedModelList?.supported_models
+        ? Object.keys(parsedModelList.supported_models)
+        : [];
+      if (!supportedModels.includes(selectedModel)) {
+        return fail('UNSUPPORTED_MODEL', `Unsupported model: ${selectedModel}`, { supportedModels });
       }
 
-      let finalOllamaPath = ollamaPath;
-      if (!finalOllamaPath) {
-        finalOllamaPath = await new Promise((resolve) => {
-          exec('which ollama', { timeout: 5000 }, (error, stdout) => {
-            if (!error && stdout.trim()) {
-              resolve(stdout.trim());
-              return;
-            }
-            exec('/opt/homebrew/bin/ollama --version', { timeout: 5000 }, (error2) => {
-              if (!error2) {
-                resolve('/opt/homebrew/bin/ollama');
-                return;
-              }
-              exec('/usr/local/bin/ollama --version', { timeout: 5000 }, (error3) => {
-                if (!error3) {
-                  resolve('/usr/local/bin/ollama');
-                } else {
-                  resolve(null);
-                }
-              });
-            });
-          });
-        });
-      }
-      if (!finalOllamaPath) {
-        sendDebugLog(mainWindow, 'Error: Ollama executable not found after install/check step');
-        return { success: false, error: 'Ollama executable not found' };
-      }
-
-      sendDebugLog(mainWindow, `Using Ollama executable: ${finalOllamaPath}`);
       sendDebugLog(mainWindow, 'Downloading AI model (this may take several minutes)...');
-      sendDebugLog(mainWindow, '$ openscribe-backend pull-model llama3.2:3b');
+      sendDebugLog(mainWindow, `$ openscribe-backend pull-model ${selectedModel}`);
 
       try {
-        await runPythonScript(mainWindow, 'simple_recorder.py', ['pull-model', 'llama3.2:3b']);
+        await runPythonScript(mainWindow, 'simple_recorder.py', ['pull-model', selectedModel]);
         sendDebugLog(mainWindow, 'AI model download completed successfully');
         try {
-          await runPythonScript(mainWindow, 'simple_recorder.py', ['set-model', 'llama3.2:3b'], true);
+          await runPythonScript(mainWindow, 'simple_recorder.py', ['set-model', selectedModel], true);
         } catch (e) {
           // Non-fatal
         }
         trackEvent('setup_completed', { step: 'ollama_and_model' });
-        return { success: true, message: 'Ollama and AI model ready' };
+        return ok({ message: 'Ollama and AI model ready', model: selectedModel });
       } catch (pullError) {
         sendDebugLog(mainWindow, `AI model download failed: ${pullError.message}`);
         try {
@@ -1357,10 +1280,10 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, `Ollama diagnostics failed: ${diagError.message}`);
         }
         trackEvent('setup_failed', { step: 'ollama_and_model' });
-        return { success: false, error: 'Failed to download AI model', details: pullError.message };
+        return fail('MODEL_DOWNLOAD_FAILED', 'Failed to download AI model', pullError.message);
       }
     } catch (error) {
-      return { success: false, error: error.message };
+      return fail('MODEL_SETUP_FAILED', error.message);
     }
   });
 
@@ -1386,20 +1309,20 @@ function registerOpenScribeIpcHandlers(mainWindow) {
         process.on('close', (code) => {
           if (code === 0) {
             sendDebugLog(mainWindow, 'Whisper model downloaded successfully');
-            resolve({ success: true, message: 'Whisper model ready' });
+            resolve(ok({ message: 'Whisper model ready' }));
           } else {
             sendDebugLog(mainWindow, `Whisper model download failed with exit code: ${code}`);
-            resolve({ success: false, error: 'Failed to download Whisper model' });
+            resolve(fail('WHISPER_DOWNLOAD_FAILED', 'Failed to download Whisper model'));
           }
         });
 
         process.on('error', (error) => {
           sendDebugLog(mainWindow, `Process error: ${error.message}`);
-          resolve({ success: false, error: error.message });
+          resolve(fail('WHISPER_DOWNLOAD_FAILED', error.message));
         });
       });
     } catch (error) {
-      return { success: false, error: error.message };
+      return fail('WHISPER_DOWNLOAD_FAILED', error.message);
     }
   });
 
@@ -1417,17 +1340,17 @@ function registerOpenScribeIpcHandlers(mainWindow) {
       if (result.includes('System check passed') || result.includes('SUCCESS')) {
         sendDebugLog(mainWindow, 'System test completed successfully');
         trackEvent('setup_completed', { step: 'system_test' });
-        return { success: true, message: 'System test passed' };
+        return ok({ message: 'System test passed' });
       }
 
       const errorLines = result.split('\n').filter((line) => line.includes('ERROR:'));
       const specificError = errorLines.length > 0 ? errorLines[errorLines.length - 1].replace('ERROR: ', '') : 'Unknown error';
       sendDebugLog(mainWindow, `System test failed: ${specificError}`);
       trackEvent('setup_failed', { step: 'system_test' });
-      return { success: false, error: `System test failed: ${specificError}`, details: result };
+      return fail('SYSTEM_TEST_FAILED', `System test failed: ${specificError}`, result);
     } catch (error) {
       sendDebugLog(mainWindow, `System test error: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('SYSTEM_TEST_FAILED', error.message);
     }
   });
 
@@ -1435,9 +1358,9 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const packagePath = path.join(__dirname, 'package.json');
       const packageContent = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-      return { success: true, version: packageContent.version, name: packageContent.productName || packageContent.name };
+      return ok({ version: packageContent.version, name: packageContent.productName || packageContent.name });
     } catch (error) {
-      return { success: false, error: error.message };
+      return fail('APP_VERSION_FAILED', error.message);
     }
   });
 
@@ -1481,10 +1404,10 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['list-models']);
       const jsonData = JSON.parse(result);
-      return { success: true, ...jsonData };
+      return ok(jsonData);
     } catch (error) {
       sendDebugLog(mainWindow, `Error listing models: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('LIST_MODELS_FAILED', error.message);
     }
   });
 
@@ -1492,29 +1415,41 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['get-model']);
       const jsonData = JSON.parse(result);
-      return { success: true, ...jsonData };
+      return ok(jsonData);
     } catch (error) {
       sendDebugLog(mainWindow, `Error getting current model: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('GET_MODEL_FAILED', error.message);
     }
   });
 
   ipcMain.handle('set-model', async (event, modelName) => {
     try {
       sendDebugLog(mainWindow, `Setting model to: ${modelName}`);
+      const modelList = await runPythonScript(mainWindow, 'simple_recorder.py', ['list-models'], true);
+      const parsedModelList = JSON.parse(modelList);
+      const supportedModels = parsedModelList?.supported_models
+        ? Object.keys(parsedModelList.supported_models)
+        : [];
+      if (!supportedModels.includes(modelName)) {
+        return fail('UNSUPPORTED_MODEL', `Unsupported model: ${modelName}`, { supportedModels });
+      }
+
       const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['set-model', modelName]);
       const jsonMatch = result.match(/\{.*\}/s);
       if (jsonMatch) {
         const jsonData = JSON.parse(jsonMatch[0]);
+        if (!jsonData.success) {
+          return fail('SET_MODEL_FAILED', jsonData.error || 'Failed to set model', jsonData);
+        }
         trackEvent('model_changed', { model: modelName });
-        return jsonData;
+        return ok({ model: modelName });
       }
 
       trackEvent('model_changed', { model: modelName });
-      return { success: true, model: modelName };
+      return ok({ model: modelName });
     } catch (error) {
       sendDebugLog(mainWindow, `Error setting model: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('SET_MODEL_FAILED', error.message);
     }
   });
 
@@ -1522,10 +1457,10 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['get-notifications']);
       const jsonData = JSON.parse(result);
-      return { success: true, ...jsonData };
+      return ok(jsonData);
     } catch (error) {
       sendDebugLog(mainWindow, `Error getting notification settings: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('GET_NOTIFICATIONS_FAILED', error.message);
     }
   });
 
@@ -1540,13 +1475,13 @@ function registerOpenScribeIpcHandlers(mainWindow) {
       const jsonMatch = result.match(/\{.*\}/s);
       if (jsonMatch) {
         const jsonData = JSON.parse(jsonMatch[0]);
-        return jsonData;
+        return ok(jsonData);
       }
 
-      return { success: true, notifications_enabled: enabled };
+      return ok({ notifications_enabled: enabled });
     } catch (error) {
       sendDebugLog(mainWindow, `Error setting notifications: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('SET_NOTIFICATIONS_FAILED', error.message);
     }
   });
 
@@ -1554,10 +1489,10 @@ function registerOpenScribeIpcHandlers(mainWindow) {
     try {
       const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['get-telemetry']);
       const jsonData = JSON.parse(result);
-      return { success: true, ...jsonData };
+      return ok(jsonData);
     } catch (error) {
       sendDebugLog(mainWindow, `Error getting telemetry settings: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('GET_TELEMETRY_FAILED', error.message);
     }
   });
 
@@ -1579,13 +1514,13 @@ function registerOpenScribeIpcHandlers(mainWindow) {
       const jsonMatch = result.match(/\{.*\}/s);
       if (jsonMatch) {
         const jsonData = JSON.parse(jsonMatch[0]);
-        return jsonData;
+        return ok(jsonData);
       }
 
-      return { success: true, telemetry_enabled: enabled };
+      return ok({ telemetry_enabled: enabled });
     } catch (error) {
       sendDebugLog(mainWindow, `Error setting telemetry: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('SET_TELEMETRY_FAILED', error.message);
     }
   });
 
@@ -1605,7 +1540,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, output);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('model-pull-progress', {
+            sendToRenderer(mainWindow, 'model-pull-progress', {
               model: modelName,
               progress: output,
             });
@@ -1617,7 +1552,7 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, output);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('model-pull-progress', {
+            sendToRenderer(mainWindow, 'model-pull-progress', {
               model: modelName,
               progress: output,
             });
@@ -1629,25 +1564,25 @@ function registerOpenScribeIpcHandlers(mainWindow) {
             sendDebugLog(mainWindow, `Successfully pulled model: ${modelName}`);
 
             if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('model-pull-complete', {
+              sendToRenderer(mainWindow, 'model-pull-complete', {
                 model: modelName,
                 success: true,
               });
             }
 
-            resolve({ success: true, model: modelName });
+            resolve(ok({ model: modelName }));
           } else {
             sendDebugLog(mainWindow, `Failed to pull model: ${modelName}`);
 
             if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('model-pull-complete', {
+              sendToRenderer(mainWindow, 'model-pull-complete', {
                 model: modelName,
                 success: false,
                 error: `Process exited with code ${code}`,
               });
             }
 
-            resolve({ success: false, error: `Process exited with code ${code}` });
+            resolve(fail('MODEL_PULL_FAILED', `Process exited with code ${code}`));
           }
         });
 
@@ -1655,39 +1590,214 @@ function registerOpenScribeIpcHandlers(mainWindow) {
           sendDebugLog(mainWindow, `Error pulling model: ${error.message}`);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('model-pull-complete', {
+            sendToRenderer(mainWindow, 'model-pull-complete', {
               model: modelName,
               success: false,
               error: error.message,
             });
           }
 
-          resolve({ success: false, error: error.message });
+          resolve(fail('MODEL_PULL_FAILED', error.message));
         });
       });
     } catch (error) {
       sendDebugLog(mainWindow, `Error in pull-model handler: ${error.message}`);
-      return { success: false, error: error.message };
+      return fail('MODEL_PULL_FAILED', error.message);
     }
   });
 
   ipcMain.handle('check-for-updates', async () => {
-    return { success: true, updateAvailable: false, disabled: true };
+    try {
+      return await checkForUpdates();
+    } catch (error) {
+      return fail('UPDATE_CHECK_FAILED', error.message);
+    }
   });
 
   ipcMain.handle('check-announcements', async () => {
-    return { success: true, announcements: [], disabled: true };
+    return ok({ announcements: [], disabled: true });
   });
 
   ipcMain.handle('open-release-page', async (event, url) => {
     try {
       await shell.openExternal(url);
-      return { success: true };
+      return ok();
     } catch (error) {
-      return { success: false, error: error.message };
+      return fail('OPEN_URL_FAILED', error.message);
     }
   });
 
+  ipcMain.handle('get-setup-status', async () => {
+    try {
+      const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['setup-status'], true);
+      return ok(JSON.parse(result));
+    } catch (error) {
+      return fail('SETUP_STATUS_FAILED', error.message);
+    }
+  });
+
+  ipcMain.handle('ensure-mixed-runtime-ready', async () => {
+    try {
+      const setupStatusRaw = await runPythonScript(mainWindow, 'simple_recorder.py', ['setup-status'], true);
+      const setupStatus = parseLastJsonObject(setupStatusRaw);
+
+      const whisperStatus = await ensureWhisperService(mainWindow);
+      if (!whisperStatus?.success) {
+        trackEvent('error_occurred', { error_type: 'mixed_runtime_whisper_unhealthy' });
+        return fail(
+          'WHISPER_UNHEALTHY',
+          'Whisper service is not healthy. Retry in a few seconds or restart OpenScribe.',
+          { setupStatus, whisperStatus },
+        );
+      }
+
+      const whisperModelStatus = await ensureWhisperModelReady(mainWindow);
+      if (!whisperModelStatus?.success) {
+        trackEvent('error_occurred', { error_type: 'mixed_runtime_whisper_model_unavailable' });
+        return fail(
+          'WHISPER_MODEL_UNAVAILABLE',
+          'Whisper model setup failed. Check your network connection and retry.',
+          { setupStatus, whisperModelStatus },
+        );
+      }
+
+      return ok({
+        code: 'READY',
+        userMessage: 'Mixed runtime is ready.',
+        details: {
+          setupStatus,
+          whisper: whisperStatus,
+          whisperModel: whisperModelStatus,
+        },
+      });
+    } catch (error) {
+      trackEvent('error_occurred', { error_type: 'mixed_runtime_check_failed' });
+      return fail(
+        'MIXED_RUNTIME_CHECK_FAILED',
+        'Failed to validate mixed runtime readiness.',
+        { message: error.message },
+      );
+    }
+  });
+
+  ipcMain.handle('ensure-local-runtime-ready', async () => {
+    try {
+      const setupStatusRaw = await runPythonScript(mainWindow, 'simple_recorder.py', ['setup-status'], true);
+      const setupStatus = parseLastJsonObject(setupStatusRaw);
+      if (!setupStatus || setupStatus.setup_completed !== true) {
+        trackEvent('error_occurred', { error_type: 'local_runtime_setup_incomplete' });
+        return fail(
+          'SETUP_INCOMPLETE',
+          'Local setup is incomplete. Run local setup before switching to local mode.',
+          { setupStatus },
+        );
+      }
+
+      const setupCheckRaw = await runPythonScript(mainWindow, 'simple_recorder.py', ['setup-check'], true);
+      const failingChecks = String(setupCheckRaw || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('❌'));
+      if (failingChecks.length > 0) {
+        trackEvent('error_occurred', { error_type: 'local_runtime_setup_check_failed' });
+        return fail(
+          'SETUP_CHECK_FAILED',
+          'Local runtime dependencies are missing. Complete setup requirements before switching to local mode.',
+          { failingChecks, setupCheckRaw },
+        );
+      }
+
+      const whisperStatus = await ensureWhisperService(mainWindow);
+      if (!whisperStatus?.success) {
+        trackEvent('error_occurred', { error_type: 'local_runtime_whisper_unhealthy' });
+        return fail(
+          'WHISPER_UNHEALTHY',
+          'Whisper service is not healthy. Retry setup or restart OpenScribe.',
+          whisperStatus,
+        );
+      }
+
+      const currentModelRaw = await runPythonScript(mainWindow, 'simple_recorder.py', ['get-model'], true);
+      const currentModelPayload = parseLastJsonObject(currentModelRaw);
+      const selectedModel = currentModelPayload?.model;
+      if (!selectedModel) {
+        trackEvent('error_occurred', { error_type: 'local_runtime_model_unknown' });
+        return fail('MODEL_NOT_INSTALLED', 'No local model is selected. Choose and download a local model first.');
+      }
+
+      const modelStatusRaw = await runPythonScript(mainWindow, 'simple_recorder.py', ['check-model', selectedModel], true);
+      const modelStatus = parseLastJsonObject(modelStatusRaw);
+      if (!modelStatus?.installed) {
+        trackEvent('error_occurred', { error_type: 'local_runtime_model_not_installed' });
+        return fail(
+          'MODEL_NOT_INSTALLED',
+          `Local model "${selectedModel}" is not installed. Download it before switching to local mode.`,
+          { selectedModel, modelStatus },
+        );
+      }
+
+      const warmupRaw = await runPythonScript(mainWindow, 'simple_recorder.py', ['warmup'], true);
+      const warmupPayload = parseLastJsonObject(warmupRaw);
+      if (!warmupPayload?.success) {
+        trackEvent('error_occurred', { error_type: 'local_runtime_ollama_not_ready' });
+        return fail(
+          'OLLAMA_NOT_READY',
+          'Ollama/model warmup failed. Ensure Ollama is running and model files are healthy.',
+          warmupPayload || { warmupRaw },
+        );
+      }
+
+      return ok({
+        code: 'READY',
+        userMessage: 'Local runtime is ready.',
+        details: {
+          selectedModel,
+          whisper: whisperStatus,
+          warmup: warmupPayload,
+        },
+      });
+    } catch (error) {
+      trackEvent('error_occurred', { error_type: 'local_runtime_check_failed' });
+      return fail(
+        'LOCAL_RUNTIME_CHECK_FAILED',
+        'Failed to validate local runtime readiness. Retry or run local setup.',
+        { message: error.message },
+      );
+    }
+  });
+
+  ipcMain.handle('set-setup-completed', async (_event, completed) => {
+    try {
+      const result = await runPythonScript(
+        mainWindow,
+        'simple_recorder.py',
+        ['set-setup-completed', completed ? 'True' : 'False'],
+        true,
+      );
+      return ok(JSON.parse(result));
+    } catch (error) {
+      return fail('SETUP_STATUS_UPDATE_FAILED', error.message);
+    }
+  });
+
+  ipcMain.handle('set-runtime-preference', async (_event, runtimePreference) => {
+    try {
+      const mode = runtimePreference === 'local' ? 'local' : 'mixed';
+      const result = await runPythonScript(mainWindow, 'simple_recorder.py', ['set-runtime-preference', mode], true);
+      return ok(JSON.parse(result));
+    } catch (error) {
+      return fail('RUNTIME_PREFERENCE_UPDATE_FAILED', error.message);
+    }
+  });
+
+  ipcMain.handle('get-ipc-contract', async () => {
+    return ok({
+      channels: {
+        setup: ['startup-setup-check', 'get-setup-status', 'set-setup-completed', 'setup-whisper', 'ensure-mixed-runtime-ready', 'ensure-local-runtime-ready'],
+        models: ['list-models', 'get-current-model', 'set-model', 'pull-model', 'setup-ollama-and-model'],
+      },
+    });
+  });
   ipcMain.handle('send-to-openclaw', async (_event, rawPayload) => {
     try {
       const payload = sanitizeOpenClawPayload(rawPayload);
@@ -1724,7 +1834,6 @@ function registerOpenScribeIpcHandlers(mainWindow) {
       return { success: false, error: message };
     }
   });
-
   // Background warmup to reduce first note-generation latency.
   setTimeout(() => {
     ensureWhisperService(mainWindow).catch((error) => {
@@ -1768,63 +1877,52 @@ async function checkForUpdates() {
 
           const isUpdateAvailable = compareVersions(currentVersion, latestVersion) < 0;
 
-          resolve({
-            success: true,
+          resolve(ok({
             updateAvailable: isUpdateAvailable,
             currentVersion,
             latestVersion,
             releaseUrl: release.html_url,
             releaseName: release.name || `Version ${latestVersion}`,
             downloadUrl: getDownloadUrl(release.assets),
-          });
+          }));
         } catch (error) {
-          resolve({ success: false, error: 'Failed to parse update data' });
+          resolve(fail('UPDATE_PARSE_FAILED', 'Failed to parse update data'));
         }
       });
     });
 
     req.on('error', (error) => {
-      resolve({ success: false, error: error.message });
+      resolve(fail('UPDATE_NETWORK_FAILED', error.message));
     });
 
     req.setTimeout(10000, () => {
       req.destroy();
-      resolve({ success: false, error: 'Update check timeout' });
+      resolve(fail('UPDATE_TIMEOUT', 'Update check timeout'));
     });
 
     req.end();
   });
 }
 
-function compareVersions(current, latest) {
-  const currentParts = current.split('.').map(Number);
-  const latestParts = latest.split('.').map(Number);
+async function runBackendHealthProbe() {
+  try {
+    const setupStatus = await runPythonScript(null, 'simple_recorder.py', ['setup-status'], true);
+    JSON.parse(setupStatus);
+    const modelList = await runPythonScript(null, 'simple_recorder.py', ['list-models'], true);
+    JSON.parse(modelList);
 
-  for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
-    const currentPart = currentParts[i] || 0;
-    const latestPart = latestParts[i] || 0;
+    if (process.env.OPENSCRIBE_E2E_STUB_PIPELINE === '1') {
+      const selfTest = await runPythonScript(null, 'simple_recorder.py', ['e2e-self-test'], true);
+      const parsed = JSON.parse(selfTest.trim());
+      if (!parsed.success) {
+        return fail('E2E_SELF_TEST_FAILED', parsed.error || 'e2e-self-test failed');
+      }
+    }
 
-    if (currentPart < latestPart) return -1;
-    if (currentPart > latestPart) return 1;
+    return ok({ probe: 'backend-health', status: 'ok' });
+  } catch (error) {
+    return fail('BACKEND_HEALTH_PROBE_FAILED', error.message);
   }
-
-  return 0;
-}
-
-function getDownloadUrl(assets) {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  if (platform === 'darwin') {
-    const armAsset = assets.find((asset) => asset.name.includes('arm64') && asset.name.includes('dmg'));
-    const intelAsset = assets.find((asset) => asset.name.includes('x64') && asset.name.includes('dmg'));
-
-    if (arch === 'arm64' && armAsset) return armAsset.browser_download_url;
-    if (intelAsset) return intelAsset.browser_download_url;
-    if (armAsset) return armAsset.browser_download_url;
-  }
-
-  return assets.length > 0 ? assets[0].browser_download_url : null;
 }
 
 module.exports = {
@@ -1835,4 +1933,5 @@ module.exports = {
   trackEvent,
   durationBucket,
   stopWhisperService,
+  runBackendHealthProbe,
 };

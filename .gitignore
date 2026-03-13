@@ -23,3 +23,6 @@ yarn-debug.log*
 yarn-error.log*
 *.tsbuildinfo
 .idea
+local-only/openscribe-backend/ollama_startup_report.json
+local-only/openscribe-backend/recorder_state.json
+local-only/openscribe-backend/config.json

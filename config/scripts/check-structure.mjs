@@ -38,6 +38,7 @@ const allowedRootFiles = new Set([
   "TEST_SESSION.md",
   ".dockerignore",
   "docker-compose.sam.yml",
+  "tsconfig.tsbuildinfo",
 ])
 const buildArtifacts = new Set([".next", ".tests-dist", "dist"])
 const configPattern = /\.config\.(?:js|cjs|mjs|ts)$/
@@ -48,6 +49,7 @@ const pipelineStages = new Set([
   "assemble",
   "note-core",
   "render",
+  "shared",
   "medgemma-scribe",
   "eval",
 ])

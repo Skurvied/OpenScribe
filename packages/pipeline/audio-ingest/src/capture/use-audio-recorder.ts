@@ -29,6 +29,7 @@ interface UseAudioRecorderOptions {
   onSegmentReady?: (segment: RecordedSegment) => void
   segmentDurationMs?: number
   overlapMs?: number
+  preferredInputDeviceId?: string
 }
 
 interface UseAudioRecorderReturn {
@@ -44,7 +45,7 @@ interface UseAudioRecorderReturn {
 }
 
 export function useAudioRecorder(options: UseAudioRecorderOptions = {}): UseAudioRecorderReturn {
-  const { onSegmentReady, segmentDurationMs = DEFAULT_SEGMENT_MS, overlapMs = DEFAULT_OVERLAP_MS } = options
+  const { onSegmentReady, segmentDurationMs = DEFAULT_SEGMENT_MS, overlapMs = DEFAULT_OVERLAP_MS, preferredInputDeviceId } = options
   const [isRecording, setIsRecording] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -176,15 +177,36 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}): UseAudi
       allSamplesRef.current = []
       seqRef.current = 0
 
-      const microphoneStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          channelCount: 1,
-        },
+      const buildAudioConstraints = (deviceId?: string) => ({
+        echoCancellation: true,
+        noiseSuppression: true,
+        channelCount: 1,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       })
 
+      let microphoneStream: MediaStream
+      try {
+        microphoneStream = await navigator.mediaDevices.getUserMedia({
+          audio: buildAudioConstraints(preferredInputDeviceId),
+        })
+      } catch (error) {
+        const errorName = error instanceof Error ? error.name : ""
+        if ((errorName === "NotFoundError" || errorName === "OverconstrainedError") && preferredInputDeviceId) {
+          microphoneStream = await navigator.mediaDevices.getUserMedia({
+            audio: buildAudioConstraints(""),
+          })
+        } else {
+          throw error
+        }
+      }
+
       micStreamRef.current = microphoneStream
+      const activeTrack = microphoneStream.getAudioTracks()[0]
+      const activeSettings = activeTrack?.getSettings?.()
+      console.info("[audio-recorder] microphone stream active", {
+        hasTrack: !!activeTrack,
+        deviceIdHash: activeSettings?.deviceId ? String(activeSettings.deviceId).slice(-6) : "",
+      })
 
       const systemCapture = await requestSystemAudioStream()
       const systemStream =
@@ -232,7 +254,7 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}): UseAudi
         pipelineError.details,
       )
     }
-  }, [cleanupAudio, setupProcessor, startTimer])
+  }, [cleanupAudio, preferredInputDeviceId, setupProcessor, startTimer])
 
   const finalizeRecording = useCallback(async (): Promise<Blob | null> => {
     try {

@@ -6,6 +6,8 @@ Handles storing and loading user preferences like model selection.
 
 import json
 import logging
+import os
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -54,13 +56,7 @@ class Config:
             config_path: Path to config file. If None, uses default location.
         """
         if config_path is None:
-            # Use same directory logic as recorder state
-            if "OpenScribe.app" in str(Path(__file__)) or "Applications" in str(Path(__file__)):
-                # Production: ~/Library/Application Support/openscribe-backend
-                base_dir = Path.home() / "Library" / "Application Support" / "openscribe-backend"
-            else:
-                # Development: project root
-                base_dir = Path(__file__).parent.parent
+            base_dir = get_backend_data_dir()
 
             base_dir.mkdir(parents=True, exist_ok=True)
             self.config_path = base_dir / "config.json"
@@ -98,9 +94,13 @@ class Config:
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration."""
         return {
+            "model_catalog_version": "v1",
             "model": self.DEFAULT_MODEL,
+            "selected_model": self.DEFAULT_MODEL,
             "notifications_enabled": True,
-            "telemetry_enabled": True,
+            "telemetry_enabled": False,
+            "setup_completed": False,
+            "runtime_preference": "mixed",
             "anonymous_id": str(uuid.uuid4()),
             "version": "1.0"
         }
@@ -109,7 +109,7 @@ class Config:
         """Get the configured model name."""
         return self._config.get("model", self.DEFAULT_MODEL)
 
-    def set_model(self, model_name: str) -> bool:
+    def set_model(self, model_name: str, allow_unsupported: bool = False) -> bool:
         """
         Set the model to use for summarization.
 
@@ -120,10 +120,13 @@ class Config:
             True if saved successfully, False otherwise
         """
         # Validate model name
-        if model_name not in self.SUPPORTED_MODELS:
-            logger.warning(f"Model {model_name} not in supported list, but allowing anyway")
+        if model_name not in self.SUPPORTED_MODELS and not allow_unsupported:
+            logger.warning(f"Rejected unsupported model: {model_name}")
+            return False
 
         self._config["model"] = model_name
+        self._config["selected_model"] = model_name
+        self._config["model_catalog_version"] = "v1"
         return self._save()
 
     def get_model_info(self, model_name: str) -> Optional[Dict[str, str]]:
@@ -161,7 +164,7 @@ class Config:
 
     def get_telemetry_enabled(self) -> bool:
         """Get whether anonymous usage analytics are enabled."""
-        return self._config.get("telemetry_enabled", True)
+        return self._config.get("telemetry_enabled", False)
 
     def set_telemetry_enabled(self, enabled: bool) -> bool:
         """
@@ -194,6 +197,26 @@ class Config:
         self._config[key] = value
         return self._save()
 
+    def is_setup_completed(self) -> bool:
+        """Get whether first-run setup has been completed."""
+        return bool(self._config.get("setup_completed", False))
+
+    def set_setup_completed(self, completed: bool) -> bool:
+        """Set first-run setup completion status."""
+        self._config["setup_completed"] = bool(completed)
+        return self._save()
+
+    def get_runtime_preference(self) -> str:
+        """Get preferred runtime mode."""
+        return str(self._config.get("runtime_preference", "mixed"))
+
+    def set_runtime_preference(self, runtime_preference: str) -> bool:
+        """Set preferred runtime mode."""
+        if runtime_preference not in {"mixed", "local"}:
+            return False
+        self._config["runtime_preference"] = runtime_preference
+        return self._save()
+
 
 # Global config instance
 _config_instance: Optional[Config] = None
@@ -205,3 +228,27 @@ def get_config() -> Config:
     if _config_instance is None:
         _config_instance = Config()
     return _config_instance
+
+
+def _platform_data_root() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    if sys.platform == "win32":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return Path(appdata)
+        return Path.home() / "AppData" / "Roaming"
+    xdg = os.getenv("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg)
+    return Path.home() / ".local" / "share"
+
+
+def get_backend_data_dir() -> Path:
+    """
+    Return the writable directory for backend runtime state.
+    In development, keep project-local paths to preserve current workflow.
+    """
+    if getattr(sys, "frozen", False):
+        return _platform_data_root() / "openscribe-backend"
+    return Path(__file__).parent.parent

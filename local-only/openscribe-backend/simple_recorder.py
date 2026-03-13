@@ -43,10 +43,13 @@ try:
     from src.summarizer import OllamaSummarizer
 except ImportError:
     OllamaSummarizer = None
+from src.config import get_config, get_backend_data_dir
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+DEFAULT_WHISPER_MODEL = "tiny.en"
 
 class SimpleRecorder:
     """Simple audio recorder and transcriber."""
@@ -59,29 +62,23 @@ class SimpleRecorder:
         self.transcriber = None
         self.summarizer = None
         
-        # Directories - use user data folder for DMG distribution
-        import os
-        
-        # Detect if running from app bundle (DMG install) or development
-        current_path = Path(__file__).parent
-        if "OpenScribe.app" in str(current_path) or "Applications" in str(current_path):
-            # DMG/Production: Use Application Support folder
-            app_support = Path.home() / "Library" / "Application Support" / "openscribe-backend"
-            self.recordings_dir = app_support / "recordings"
-            self.transcripts_dir = app_support / "transcripts" 
-            self.output_dir = app_support / "output"
+        # In packaged builds, use OS-native app data; in development keep project-local dirs.
+        if getattr(sys, "frozen", False):
+            backend_dir = get_backend_data_dir()
+            self.recordings_dir = backend_dir / "recordings"
+            self.transcripts_dir = backend_dir / "transcripts"
+            self.output_dir = backend_dir / "output"
         else:
-            # Development: Use project relative paths
             self.recordings_dir = Path("recordings")
-            self.transcripts_dir = Path("transcripts") 
+            self.transcripts_dir = Path("transcripts")
             self.output_dir = Path("output")
         
         # Create directories (including parent directories)
         for dir_path in [self.recordings_dir, self.transcripts_dir, self.output_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
         
-        # State file
-        self.state_file = Path("recorder_state.json")
+        # State file lives with runtime data for packaged builds.
+        self.state_file = get_backend_data_dir() / "recorder_state.json"
         
         # Global AudioRecorder instance to maintain state across CLI calls
         self.persistent_recorder = None
@@ -868,13 +865,9 @@ def test():
 def list_meetings():
     """List all processed meetings - optimized for fast loading"""
     # Don't initialize SimpleRecorder to avoid Ollama checks - just get the output directory
-    current_path = Path(__file__).parent
-    if "OpenScribe.app" in str(current_path) or "Applications" in str(current_path):
-        # DMG/Production: Use Application Support folder
-        app_support = Path.home() / "Library" / "Application Support" / "openscribe-backend"
-        output_dir = app_support / "output"
+    if getattr(sys, "frozen", False):
+        output_dir = get_backend_data_dir() / "output"
     else:
-        # Development: Use project relative paths
         output_dir = Path("output")
     
     # Ensure output directory exists
@@ -1043,13 +1036,9 @@ def list_failed():
     """List summary files that failed processing (have fallback summaries)"""
     import json
     # Don't initialize SimpleRecorder to avoid Ollama checks - just get the output directory
-    current_path = Path(__file__).parent
-    if "OpenScribe.app" in str(current_path) or "Applications" in str(current_path):
-        # DMG/Production: Use Application Support folder
-        app_support = Path.home() / "Library" / "Application Support" / "openscribe-backend"
-        output_dir = app_support / "output"
+    if getattr(sys, "frozen", False):
+        output_dir = get_backend_data_dir() / "output"
     else:
-        # Development: Use project relative paths
         output_dir = Path("output")
     
     # Get all summary files
@@ -1125,21 +1114,18 @@ def setup_check():
         checks.append(("❌ Python", f"Error: {e}"))
     
     # Check required directories - use same logic as SimpleRecorder.__init__
-    current_path = Path(__file__).parent
-    if "OpenScribe.app" in str(current_path) or "Applications" in str(current_path):
-        # DMG/Production: Use Application Support folder
-        app_support = Path.home() / "Library" / "Application Support" / "openscribe-backend"
+    if getattr(sys, "frozen", False):
+        app_support = get_backend_data_dir()
         base_dirs = {
             "recordings": app_support / "recordings",
-            "transcripts": app_support / "transcripts", 
-            "output": app_support / "output"
+            "transcripts": app_support / "transcripts",
+            "output": app_support / "output",
         }
     else:
-        # Development: Use project relative paths
         base_dirs = {
             "recordings": Path("recordings"),
-            "transcripts": Path("transcripts"), 
-            "output": Path("output")
+            "transcripts": Path("transcripts"),
+            "output": Path("output"),
         }
     
     for dir_name, dir_path in base_dirs.items():
@@ -1185,7 +1171,7 @@ def setup_check():
                 continue
         
         if not ffmpeg_found:
-            checks.append(("❌ ffmpeg", "not found - run: brew install ffmpeg"))
+            checks.append(("❌ ffmpeg", "not found in PATH or common locations"))
     except Exception as e:
         checks.append(("❌ ffmpeg", f"Error: {e}"))
     
@@ -1226,22 +1212,38 @@ def setup_check():
     except ImportError:
         checks.append(("❌ ollama-python", "pip install ollama"))
 
-    # Check if whisper model is downloaded (pywhispercpp stores in ~/Library/Application Support/pywhispercpp/models/)
-    whisper_model_path = Path.home() / "Library" / "Application Support" / "pywhispercpp" / "models"
-    whisper_models = list(whisper_model_path.glob("ggml-*.bin")) if whisper_model_path.exists() else []
+    # Check if whisper model is downloaded (path varies by OS/install).
+    whisper_model_dirs = [
+        Path.home() / "Library" / "Application Support" / "pywhispercpp" / "models",
+        Path.home() / ".cache" / "pywhispercpp" / "models",
+        Path.home() / ".cache" / "whisper",
+        Path.home() / "AppData" / "Local" / "pywhispercpp" / "models",
+    ]
+    whisper_models = []
+    for whisper_model_path in whisper_model_dirs:
+        if whisper_model_path.exists():
+            whisper_models = list(whisper_model_path.glob("ggml-*.bin"))
+            if whisper_models:
+                break
     if whisper_models:
         model_name = whisper_models[0].stem.replace("ggml-", "")
         checks.append(("✅ whisper-model", f"{model_name} downloaded"))
     else:
         checks.append(("⚠️ whisper-model", "will download on first use (~500MB)"))
 
-    # Check if LLM model is downloaded (check ~/.ollama/models/)
-    ollama_models_path = Path.home() / ".ollama" / "models" / "manifests" / "registry.ollama.ai" / "library"
-    if ollama_models_path.exists() and any(ollama_models_path.iterdir()):
-        model_names = [d.name for d in ollama_models_path.iterdir() if d.is_dir()]
-        checks.append(("✅ llm-model", ", ".join(model_names[:2])))
-    else:
-        checks.append(("❌ llm-model", "no model installed - needed for summaries"))
+    # Check if configured LLM model is installed.
+    try:
+        from src.ollama_manager import list_models
+        configured_model = get_config().get_model()
+        installed_models = list_models()
+        if configured_model in installed_models:
+            checks.append(("✅ llm-model", f"{configured_model} installed"))
+        elif installed_models:
+            checks.append(("⚠️ llm-model", f"{configured_model} not installed; found: {', '.join(installed_models[:2])}"))
+        else:
+            checks.append(("❌ llm-model", "no model installed - needed for summaries"))
+    except Exception as e:
+        checks.append(("⚠️ llm-model", f"unable to detect installed models: {e}"))
 
     # Print results
     all_good = True
@@ -1262,8 +1264,6 @@ def setup_check():
 @cli.command()
 def list_models():
     """List all supported models with metadata"""
-    from src.config import get_config
-
     config = get_config()
     models = config.list_supported_models()
     current_model = config.get_model()
@@ -1279,8 +1279,6 @@ def list_models():
 @cli.command()
 def get_model():
     """Get the currently configured model"""
-    from src.config import get_config
-
     config = get_config()
     current_model = config.get_model()
     model_info = config.get_model_info(current_model)
@@ -1297,15 +1295,13 @@ def get_model():
 @click.argument('model_name')
 def set_model(model_name):
     """Set the preferred model for summarization"""
-    from src.config import get_config
-
     config = get_config()
 
-    # Validate model
     if model_name not in config.SUPPORTED_MODELS:
-        print(f"WARNING: Model '{model_name}' is not in the recommended list.")
+        print(f"ERROR: Unsupported model '{model_name}'.")
         print(f"Supported models: {', '.join(config.SUPPORTED_MODELS.keys())}")
-        print(f"Setting anyway (make sure it's installed with 'ollama pull {model_name}')")
+        print(json.dumps({"success": False, "error": "unsupported_model", "supported_models": list(config.SUPPORTED_MODELS.keys())}))
+        return
 
     success = config.set_model(model_name)
 
@@ -1320,8 +1316,6 @@ def set_model(model_name):
 @cli.command()
 def get_notifications():
     """Get the current notification preference"""
-    from src.config import get_config
-
     config = get_config()
     enabled = config.get_notifications_enabled()
 
@@ -1336,8 +1330,6 @@ def get_notifications():
 @click.argument('enabled', type=bool)
 def set_notifications(enabled):
     """Set notification preference (True/False)"""
-    from src.config import get_config
-
     config = get_config()
     success = config.set_notifications_enabled(enabled)
 
@@ -1352,8 +1344,6 @@ def set_notifications(enabled):
 @cli.command()
 def get_telemetry():
     """Get the current telemetry preference and anonymous ID"""
-    from src.config import get_config
-
     config = get_config()
     enabled = config.get_telemetry_enabled()
     anonymous_id = config.get_anonymous_id()
@@ -1370,8 +1360,6 @@ def get_telemetry():
 @click.argument('enabled', type=bool)
 def set_telemetry(enabled):
     """Set telemetry preference (True/False)"""
-    from src.config import get_config
-
     config = get_config()
     success = config.set_telemetry_enabled(enabled)
 
@@ -1393,13 +1381,47 @@ def download_whisper_model():
 
         # This will trigger the model download if not present
         print("Initializing Whisper model (will download if needed)...")
-        model = WhisperCppModel("small")
+        model = WhisperCppModel(DEFAULT_WHISPER_MODEL)
         print("SUCCESS: Whisper model ready")
 
     except Exception as e:
         print(f"ERROR: Failed to download Whisper model: {e}")
         import sys
         sys.exit(1)
+
+
+@cli.command()
+def setup_status():
+    """Return first-run setup status and runtime preference."""
+    config = get_config()
+    result = {
+        "setup_completed": config.is_setup_completed(),
+        "runtime_preference": config.get_runtime_preference(),
+        "selected_model": config.get_model(),
+        "model_catalog_version": config.get("model_catalog_version", "v1"),
+    }
+    print(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("completed", type=bool)
+def set_setup_completed(completed):
+    """Set first-run setup completion status."""
+    config = get_config()
+    success = config.set_setup_completed(completed)
+    print(json.dumps({"success": success, "setup_completed": bool(completed)}))
+
+
+@cli.command()
+@click.argument("runtime_preference")
+def set_runtime_preference(runtime_preference):
+    """Set runtime preference (mixed|local)."""
+    config = get_config()
+    success = config.set_runtime_preference(runtime_preference)
+    if not success:
+        print(json.dumps({"success": False, "error": "invalid_runtime_preference"}))
+        return
+    print(json.dumps({"success": True, "runtime_preference": runtime_preference}))
 
 
 @cli.command()
@@ -1480,6 +1502,42 @@ def pull_model(model_name):
         print(json.dumps({"success": False, "error": str(e)}))
         import sys
         sys.exit(1)
+
+
+@cli.command()
+def e2e_self_test():
+    """Deterministic CI self-test for packaged backend integration."""
+    if os.getenv("OPENSCRIBE_E2E_STUB_PIPELINE") != "1":
+        print(json.dumps({"success": False, "error": "e2e_stub_pipeline_disabled"}))
+        return
+
+    recorder = SimpleRecorder()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    transcript_path = recorder.transcripts_dir / f"{timestamp}_e2e_transcript.txt"
+    summary_path = recorder.output_dir / f"{timestamp}_e2e_summary.json"
+
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text("e2e deterministic transcript", encoding="utf-8")
+
+    config = get_config()
+    payload = {
+        "session_info": {
+            "name": "E2E Smoke",
+            "processed_at": datetime.now().isoformat(),
+            "summary_file": str(summary_path),
+            "transcript_file": str(transcript_path),
+        },
+        "summary": "e2e deterministic summary",
+        "participants": ["speaker-a", "speaker-b"],
+        "key_points": ["pipeline_ok", "storage_ok"],
+        "action_items": ["none"],
+        "clinical_note": "e2e deterministic note",
+        "transcript": "e2e deterministic transcript",
+        "model": config.get_model(),
+    }
+    summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(json.dumps({"success": True, "summary_file": str(summary_path), "transcript_file": str(transcript_path)}))
 
 
 @cli.command(name='whisper-server')
